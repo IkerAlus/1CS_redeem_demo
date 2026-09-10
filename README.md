@@ -2,6 +2,21 @@
 
 Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/), with one transfer signed from their own wallet and no custody in between. The repo contains a stand-in x402 gateway (stock middleware plus a balance tally), a buyer script, the redeem module (quote, payment instructions, swap tracking, ledger) and a merchant CLI that plays the dashboard. Mainnet only, cent-sized amounts.
 
+## How it works
+
+```mermaid
+flowchart LR
+    B["Buyer agent<br/>standard x402 client"] -- "1. pays USDC per request" --> G["Gateway (stock x402)<br/>Coinbase facilitator settles"]
+    G -- "2. USDC lands, balance tallied" --> W["Merchant wallet<br/>on the payment network"]
+    M["Merchant CLI<br/>(the dashboard)"] -- "3. preview + confirm" --> R["Redeem module<br/>1Click quote · ledger · tracker"]
+    R -- "4. quote" --> N["NEAR Intents 1Click"]
+    W -- "5. one transfer to the<br/>1Click deposit address" --> N
+    N -- "6. swap + payout" --> D["Merchant's chosen<br/>chain and token"]
+    R -. "7. status until delivered" .-> N
+```
+
+Two processes (`gateway` on :4021, `module` on :4022) and two scripts (`buy`, `redeem`). The gateway is unmodified x402 apart from a ten-line balance tally; everything 1Click-specific lives in the module.
+
 ## Before you start
 
 Everything below is needed only once. Fill the values into `.env` (copy `.env.example`).
