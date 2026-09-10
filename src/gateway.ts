@@ -59,6 +59,16 @@ app.get("/article", (_req, res) => {
   res.json({ title: "Paid article", body: "Thanks for paying. This is the content behind the paywall." });
 });
 app.get("/balances", (_req, res) => res.json(balances));
+// The dashboard tells the gateway a redeem left the wallet (production: decrement on confirm, restore on refund).
+app.post("/balances/redeemed", express.json(), (req, res) => {
+  const { network, amount } = req.body as { network?: string; amount?: string };
+  if (!network || !/^\d+$/.test(amount ?? "")) return res.status(400).json({ error: "network and integer amount required" });
+  const left = BigInt(balances[network] ?? "0") - BigInt(amount!);
+  balances[network] = (left < 0n ? 0n : left).toString();
+  writeFileSync(cfg.balancesFile, JSON.stringify(balances, null, 2));
+  console.log(`redeemed ${amount} on ${network} | balance ${balances[network]}`);
+  return res.json(balances);
+});
 
 app.listen(cfg.port, () => {
   console.log(

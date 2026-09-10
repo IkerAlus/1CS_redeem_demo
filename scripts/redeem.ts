@@ -28,7 +28,7 @@ const { values: a } = parseArgs({
   options: {
     network: { type: "string", default: "eip155:42161" },
     to: { type: "string", default: "near-usdc" },
-    recipient: { type: "string" },
+    recipient: { type: "string", default: process.env.REDEEM_RECIPIENT }, // where the redeem is delivered
     amount: { type: "string" }, // smallest units; default = the whole tallied balance
     merchant: { type: "string", default: "demo" },
     dry: { type: "boolean", default: false },
@@ -75,7 +75,7 @@ if (a.list) {
 
 // ── inputs ──────────────────────────────────────────────────────────────────────────────────────
 const net = NETWORKS[a.network!] ?? fail(`unsupported --network ${a.network}; one of ${Object.keys(NETWORKS).join(", ")}`);
-if (!a.recipient) fail("--recipient is required (the address that receives the redeem)");
+if (!a.recipient) fail("--recipient is required (or set REDEEM_RECIPIENT in .env): the address that receives the redeem");
 const destinationAsset = resolveDestination(a.to!);
 const label = destinationLabel(destinationAsset);
 const out = (units: string) => (label !== destinationAsset ? `${formatUnits(BigInt(units), 6)} ${label}` : `${units} units of ${destinationAsset}`);
@@ -170,6 +170,12 @@ const funded = await api<Redeem>(`${a.module}/v1/redeems/${r.redeemId}/tx`, {
   body: JSON.stringify({ txHash: hash }),
 });
 console.log(`  Reported   module phase ${funded.phase}`);
+// Tell the gateway its redeemable balance went down (what the dashboard backend would do).
+await fetch(`${a.gateway}/balances/redeemed`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({ network: net.caip2, amount: r.amountIn }),
+}).catch(() => console.log("  (gateway not reachable: balance tally not updated)"));
 
 // ── 5. track: 1Click status until terminal ──────────────────────────────────────────────────────
 panel("Tracking");
@@ -186,7 +192,10 @@ for (;;) {
     const secs = Math.round((Date.now() - t0) / 1000);
     if (cur.phase === "SUCCESS") {
       console.log(`\n✔ Delivered ≈ ${out(cur.quote.amountOut)} to ${cur.recipient} in ${secs}s after the transfer`);
-      for (const t of cur.destinationTxs ?? []) console.log(`  ${t.explorerUrl || t.hash}`);
+      for (const t of cur.destinationTxs ?? []) {
+        // 1Click leaves explorerUrl empty for NEAR-side settlements; nearblocks can show the hash.
+        console.log(`  ${t.explorerUrl || (label.startsWith("near-") ? `https://nearblocks.io/txns/${t.hash}` : t.hash)}`);
+      }
     } else if (cur.phase === "REFUNDED") {
       console.log(`\n↩ Refunded to ${merchantWallet} after ${secs}s — the deposit missed the window or the swap failed; nothing lost`);
     } else {

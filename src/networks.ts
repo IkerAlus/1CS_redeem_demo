@@ -27,7 +27,7 @@ export const NETWORKS: Record<string, Network> = {
     explorerTx: "https://polygonscan.com/tx/",
     usdc: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359",
     oneClickAsset: "nep245:v2_1.omni.hot.tg:137_qiStmoQJDQPTebaPjgx5VBxZv6L",
-    rpc: process.env.RPC_POLYGON ?? "https://polygon-rpc.com",
+    rpc: process.env.RPC_POLYGON ?? "https://polygon-bor-rpc.publicnode.com",
   },
   "eip155:42161": {
     caip2: "eip155:42161",

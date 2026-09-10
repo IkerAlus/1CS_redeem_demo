@@ -136,6 +136,7 @@ export class RedeemService {
     row.txHash = txHash;
     row.phase = "FUNDED";
     this.ledger.put(row);
+    console.log(`[redeem ${redeemId.slice(0, 8)}] FUNDED | ${row.amountIn} on ${row.network} → ${row.recipient} | tx ${txHash}`);
     try {
       await this.oc.submitDeposit(row.depositAddress, txHash);
     } catch (e) {
@@ -148,6 +149,7 @@ export class RedeemService {
   async tick(): Promise<void> {
     for (const row of this.ledger.open()) {
       let status: string | undefined;
+      const before = `${row.phase}/${row.oneClickStatus ?? ""}`;
       try {
         const s = await this.oc.status(row.depositAddress);
         status = s.status;
@@ -171,6 +173,8 @@ export class RedeemService {
       ) {
         row.phase = "EXPIRED"; // nothing arrived before our refund cutoff
       }
+      const after = `${row.phase}/${row.oneClickStatus ?? ""}`;
+      if (after !== before) console.log(`[redeem ${row.redeemId.slice(0, 8)}] ${row.phase} | 1CS ${row.oneClickStatus ?? "-"}`);
       this.ledger.put(row);
     }
   }

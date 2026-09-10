@@ -25,7 +25,7 @@ Two processes (`gateway` on :4021, `module` on :4022) and two scripts (`buy`, `r
 |---|---|---|
 | Buyer agent | `scripts/buyer.ts` | Any x402-paying client or AI agent; a stock `@x402/fetch` client with a funded wallet. |
 | Gateway | `src/gateway.ts` | The operator's x402 gateway: stock middleware plus the Coinbase facilitator, paying into the merchant wallet exactly as today. |
-| Balance tally | `src/gateway.ts` → `balances.json` | The gateway's own settlement bookkeeping, which knows how much each merchant can redeem. |
+| Balance tally | `src/gateway.ts` → `balances.json` | The gateway's own settlement bookkeeping: adds each settled payment, subtracts what the merchant redeems (`POST /balances/redeemed`, called by the CLI as the dashboard backend would). |
 | Merchant CLI | `scripts/redeem.ts` | Two things at once: the dashboard's Redeem screen (balance, preview, confirm, history) and the merchant's wallet signing the transfer. |
 
 **New for this service** (what would ship to production, in some form):
@@ -65,11 +65,11 @@ cp .env.example .env
 npm run gateway      # :4021
 npm run module       # :4022
 npm run buy -- --network eip155:42161 --times 5
-npm run redeem -- --network eip155:42161 --to near-usdc --recipient <account.near> --dry   # balance + preview
-npm run redeem -- --network eip155:42161 --to near-usdc --recipient <account.near>         # full redeem
-npm run redeem -- --list                                                                   # history
+npm run redeem -- --network eip155:42161 --to near-usdc --dry        # balance + preview (recipient from REDEEM_RECIPIENT)
+npm run redeem -- --network eip155:42161 --to near-usdc              # full redeem
+npm run redeem -- --list                                             # history
 ```
 
-`--amount <units>` redeems part of the balance, `--delay 90` sends late on purpose to show the refund path, `--yes` skips the confirmation prompt.
+`--recipient` overrides `REDEEM_RECIPIENT`, `--amount <units>` redeems part of the balance, `--delay 90` sends late on purpose to show the refund path, `--yes` skips the confirmation prompt.
 
 Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 2 USDC to USDT on Tron. Minimums move; a `--dry` preview prints the current one when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.
