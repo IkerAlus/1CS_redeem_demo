@@ -33,4 +33,4 @@ npm run buy -- --network eip155:42161 --times 5
 npm run redeem -- --network eip155:42161 --to near-usdc --recipient <account.near>
 ```
 
-Route minimums per redeem: about 0.15 USDC from Base and 0.10 from Polygon or Arbitrum to USDC on NEAR; 1.00 to USDT on Tron.
+Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; 1.00 to USDT on Tron. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.

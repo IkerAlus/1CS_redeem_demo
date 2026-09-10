@@ -12,7 +12,7 @@
     "module": "tsx src/module.ts",
     "buy": "tsx scripts/buyer.ts",
     "redeem": "tsx scripts/redeem.ts",
-    "test": "node --import tsx --test src/",
+    "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
