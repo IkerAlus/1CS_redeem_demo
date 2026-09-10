@@ -19,7 +19,7 @@ export type Redeem = {
   phase: Phase;
   txHash?: string;
   oneClickStatus?: string;
-  destinationTxHashes?: string[];
+  destinationTxs?: { hash: string; explorerUrl: string }[];
   createdAt: number;
   updatedAt: number;
 };

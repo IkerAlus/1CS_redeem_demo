@@ -154,7 +154,8 @@ export class RedeemService {
         row.oneClickStatus = status;
         if (TERMINAL.has(status)) {
           row.phase = status as Redeem["phase"];
-          row.destinationTxHashes = s.swapDetails?.destinationChainTxHashes?.map((t) => t.hash) ?? [];
+          row.destinationTxs =
+            s.swapDetails?.destinationChainTxHashes?.map((t) => ({ hash: t.hash, explorerUrl: t.explorerUrl })) ?? [];
         }
       } catch (e) {
         if (e instanceof ApiError && e.status === 404) {

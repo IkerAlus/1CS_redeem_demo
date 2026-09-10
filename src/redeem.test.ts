@@ -137,7 +137,7 @@ for (const terminal of ["SUCCESS", "REFUNDED", "FAILED"] as const) {
     const done = ledger.get(row.redeemId)!;
     assert.equal(done.phase, terminal);
     assert.equal(done.oneClickStatus, terminal);
-    assert.deepEqual(done.destinationTxHashes, ["0xdest"]);
+    assert.deepEqual(done.destinationTxs, [{ hash: "0xdest", explorerUrl: "" }]);
     assert.equal(ledger.open().length, 0);
   });
 }
