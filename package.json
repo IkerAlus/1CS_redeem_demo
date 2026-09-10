@@ -1,0 +1,35 @@
+{
+  "name": "1cs-redeem-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Redeem-to-any-chain payout demo for x402 payment gateways, settled through NEAR Intents 1Click Swap",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gateway": "tsx src/gateway.ts",
+    "module": "tsx src/module.ts",
+    "buy": "tsx scripts/buyer.ts",
+    "redeem": "tsx scripts/redeem.ts",
+    "test": "node --import tsx --test src/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coinbase/x402": "2.1.0",
+    "@defuse-protocol/one-click-sdk-typescript": "0.1.25",
+    "@x402/core": "2.25.0",
+    "@x402/evm": "2.25.0",
+    "@x402/express": "2.25.0",
+    "@x402/fetch": "2.25.0",
+    "@x402/paywall": "2.25.0",
+    "express": "5.2.1",
+    "viem": "2.56.3"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "22.20.2",
+    "tsx": "4.23.13",
+    "typescript": "5.9.3"
+  }
+}
