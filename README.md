@@ -1,0 +1,3 @@
+# 1CS Redeem Demo
+
+Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/), with one transfer signed from their own wallet and no custody in between. The repo contains a stand-in x402 gateway (stock middleware plus a balance tally), a buyer script, the redeem module (quote, payment instructions, swap tracking, ledger) and a merchant CLI that plays the dashboard. Mainnet only, cent-sized amounts.
