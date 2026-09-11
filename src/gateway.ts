@@ -147,16 +147,16 @@ m.get("/balances", (_req, res) => {
 m.get("/destinations", async (_req, res) => res.json(await module("/v1/destinations")));
 
 /**
- * POST /merchant/redeem  { network, to?, recipient?, amount?, dry?, delaySec? }
+ * POST /merchant/redeem  { originNetwork, to?, recipient?, amount?, dry?, delaySec? }
  *   dry: true  → preview only.
  *   otherwise  → quote, sign + send the transfer from the custodied wallet, report, decrement the tally.
  *   delaySec   → demo-only: wait before sending (late-send / refund path).
  */
 m.post("/redeem", async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
-  const network = String(b.network ?? "");
+  const network = String(b.originNetwork ?? "");
   const n = NETWORKS[network];
-  if (!n || !networks.includes(network as Network)) throw new ApiError(400, `network must be one of ${networks.join(", ")}`);
+  if (!n || !networks.includes(network as Network)) throw new ApiError(400, `originNetwork must be one of ${networks.join(", ")}`);
   const recipient = String(b.recipient ?? cfg.redeemRecipient ?? "");
   if (!recipient) throw new ApiError(400, "recipient is required (or set REDEEM_RECIPIENT)");
   const to = String(b.to ?? "near-usdc");

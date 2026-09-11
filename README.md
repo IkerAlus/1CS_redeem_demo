@@ -15,7 +15,7 @@ flowchart LR
     N -- "7. swap + payout" --> D["Merchant's chosen<br/>chain and token"]
 ```
 
-Two processes (`gateway` on :4021, `module` on :4022) and one script (`buy`). The merchant needs nothing installed: the dashboard is the gateway's `/merchant/*` REST API, driven here with `curl`. Everything 1Click-specific lives in the module.
+Two processes (`gateway` on :4021, `module` on :4022, or both at once with `npm run demo`) and one script (`buy`). The merchant needs nothing installed: the dashboard is the gateway's `/merchant/*` REST API, driven here with `curl`. Everything 1Click-specific lives in the module.
 
 ## Components
 
@@ -37,6 +37,8 @@ Two processes (`gateway` on :4021, `module` on :4022) and one script (`buy`). Th
 | Ledger | `src/ledger.ts` | One record per redeem, from instructions to delivery or refund; a JSON file here, a database table in production. |
 | Network table | `src/networks.ts` | The payment networks a merchant can redeem from, their USDC contracts and 1Click asset ids, plus destination aliases. |
 | Dashboard and API changes | sketched by `/merchant/*` | The operator's side: a Redeem screen and public-API endpoints over the module calls, the custody signer, and balance decrement/restore on confirm, expiry and refund. |
+
+**Why two processes.** In production the redeem module is one component of the gateway operator's stack, called by their dashboard backend. The demo keeps it as a separate process on its own port so the ownership line is visible: the gateway terminal shows the operator's side, the module terminal shows the part we supply, and the five HTTP calls between them are exactly the integration contract. For a quick run, `npm run demo` starts both in a single terminal with `[gateway]` and `[module ]` prefixed log lines; nothing else changes, the two still talk over localhost and each reaches the facilitator and 1Click on its own.
 
 ## Before you start
 
@@ -63,9 +65,8 @@ Then:
 ```bash
 npm install
 cp .env.example .env
-npm run gateway      # terminal 1, :4021
-npm run module       # terminal 2, :4022
-npm run buy -- --network eip155:42161 --times 3    # terminal 3: a buyer pays three times
+npm run demo         # terminal 1: gateway (:4021) + module (:4022) together; or `npm run gateway` and `npm run module` in two terminals
+npm run buy -- --network eip155:42161 --times 3    # terminal 2: a buyer pays three times
 ```
 
 The merchant then uses the gateway's API, nothing to install:
@@ -73,12 +74,12 @@ The merchant then uses the gateway's API, nothing to install:
 ```bash
 curl -s localhost:4021/merchant/balances
 curl -s localhost:4021/merchant/destinations
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"network":"eip155:42161","to":"near-usdc","dry":true}'
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"network":"eip155:42161","to":"near-usdc"}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","to":"near-usdc","dry":true}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","to":"near-usdc"}'
 curl -s localhost:4021/merchant/redeems/<redeemId>     # poll until phase SUCCESS (about a minute)
 curl -s localhost:4021/merchant/redeems                # history
 ```
 
-`POST /merchant/redeem` fields: `network` (required), `to` (destination alias or 1Click asset id, default `near-usdc`), `recipient` (default `REDEEM_RECIPIENT`), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds.
+`POST /merchant/redeem` fields: `originNetwork` (required, CAIP-2, the payment network the balance sits on), `to` (destination alias or 1Click asset id, default `near-usdc`), `recipient` (default `REDEEM_RECIPIENT`), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds.
 
 Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 2 USDC to USDT on Tron. Minimums move; a `--dry` preview prints the current one when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.

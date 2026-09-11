@@ -10,6 +10,7 @@
   "scripts": {
     "gateway": "tsx src/gateway.ts",
     "module": "tsx src/module.ts",
+    "demo": "node scripts/demo.mjs",
     "buy": "tsx scripts/buyer.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit"
