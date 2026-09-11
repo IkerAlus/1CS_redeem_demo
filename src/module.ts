@@ -11,7 +11,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { ApiError } from "@defuse-protocol/one-click-sdk-typescript";
 import { moduleConfig } from "./config.js";
 import { Ledger } from "./ledger.js";
-import { DESTINATIONS, NETWORKS, resolveDestination } from "./networks.js";
+import { NETWORKS } from "./networks.js";
 import { HttpError, RedeemService, sdkClient, type RedeemInput } from "./redeem.js";
 
 export function parseInput(q: Record<string, unknown>): RedeemInput {
@@ -25,7 +25,7 @@ export function parseInput(q: Record<string, unknown>): RedeemInput {
     network: s("network"),
     fromWallet: s("fromWallet"),
     amount: s("amount"),
-    destinationAsset: resolveDestination(s("destinationAsset")),
+    destinationAsset: s("destinationAsset"), // raw 1CS asset id; the caller resolves names
     recipient: s("recipient"),
   };
   if (!NETWORKS[i.network]) throw new HttpError(400, `unsupported network ${i.network}`);
@@ -56,14 +56,6 @@ export function createApp(svc: RedeemService, ledger: Ledger) {
   });
   app.get("/v1/redeems", (req, res) => {
     res.json(ledger.list(typeof req.query.merchantId === "string" ? req.query.merchantId : undefined));
-  });
-  app.get("/v1/destinations", (_req, res) => {
-    res.json(
-      Object.entries(DESTINATIONS).map(([alias, assetId]) => {
-        const [chain, token] = alias.split("-");
-        return { alias, chain, token: token?.toUpperCase(), assetId };
-      }),
-    );
   });
 
   // Express 5 routes async errors here. 1CS 4xx bodies pass through (they carry "try at least X" hints).

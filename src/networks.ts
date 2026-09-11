@@ -1,13 +1,13 @@
-/** Payment networks a merchant can redeem from, and destination aliases for the CLI. */
+/** Payment networks a merchant can redeem from (where x402 balances accumulate). Destinations live in destinations.ts. */
 
 export type Network = {
   caip2: string;
   name: string;
   chainId: number;
-  explorerTx: string; // block-explorer prefix for a tx hash (CLI output)
+  explorerTx: string; // block-explorer prefix for a tx hash
   usdc: `0x${string}`; // native USDC contract (what buyers pay with)
   oneClickAsset: string; // the same USDC as a 1CS asset id (origin of the redeem swap)
-  rpc: string; // public RPC, merchant CLI only
+  rpc: string; // public RPC (gateway: redeem transfer)
 };
 
 export const NETWORKS: Record<string, Network> = {
@@ -39,15 +39,3 @@ export const NETWORKS: Record<string, Network> = {
     rpc: process.env.RPC_ARBITRUM ?? "https://arb1.arbitrum.io/rpc",
   },
 };
-
-/** Friendly names for `--to`; any raw 1CS asset id is accepted as well. */
-export const DESTINATIONS: Record<string, string> = {
-  "near-usdc": "nep141:17208628f84f5d6ad33f0da3bbbeb27ffcb398eac501a31bd6ad2011e36133a1",
-  "near-usdt": "nep141:usdt.tether-token.near",
-  "tron-usdt": "nep141:tron-d28a265909efecdcee7c5028585214ea0b96f015.omft.near",
-};
-
-export const resolveDestination = (v: string): string => DESTINATIONS[v] ?? v;
-/** Alias for an asset id if we have one, else the id itself. */
-export const destinationLabel = (asset: string): string =>
-  Object.entries(DESTINATIONS).find(([, id]) => id === asset)?.[0] ?? asset;

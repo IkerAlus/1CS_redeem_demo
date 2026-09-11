@@ -4,9 +4,9 @@
  * plus the two things the redeem feature adds on the gateway side:
  *
  *   - a balance tally per network (the gateway's settlement bookkeeping), and
- *   - a merchant REST API (`/merchant/*`) that plays the dashboard: balances, destinations,
- *     preview / redeem, history. The merchant wallet is **custodied by the gateway**: on a redeem the
- *     gateway quotes through the redeem module, signs the USDC transfer itself, reports the tx, tracks.
+ *   - a merchant REST API (`/merchant/*`) that plays the dashboard: balances, saved payout destinations
+ *     (add / list), preview / redeem, history. The merchant wallet is **custodied by the gateway**: on a
+ *     redeem the gateway quotes through the redeem module, signs the USDC transfer itself, reports the tx, tracks.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,8 +21,9 @@ import { createPublicClient, createWalletClient, erc20Abi, formatUnits, http } f
 import { privateKeyToAccount } from "viem/accounts";
 import { arbitrum, base, polygon } from "viem/chains";
 import { gatewayConfig } from "./config.js";
+import { describeAsset, Destinations, ValidationError } from "./destinations.js";
 import type { Redeem } from "./ledger.js";
-import { destinationLabel, NETWORKS, resolveDestination } from "./networks.js";
+import { NETWORKS } from "./networks.js";
 
 const cfg = gatewayConfig();
 const networks = cfg.networks as Network[];
@@ -41,6 +42,13 @@ const balances: Record<string, string> = existsSync(cfg.balancesFile)
   ? (JSON.parse(readFileSync(cfg.balancesFile, "utf8")) as Record<string, string>)
   : {};
 const saveBalances = () => writeFileSync(cfg.balancesFile, JSON.stringify(balances, null, 2));
+
+// ── the merchant's saved payout destinations ───────────────────────────────────────────────────────
+const dests = new Destinations(cfg.destinationsFile);
+if (dests.list().length === 0 && cfg.redeemRecipient) {
+  dests.add({ chain: "near", token: "USDC", account: cfg.redeemRecipient, alias: "near-usdc" });
+}
+const fmt = (units: string | bigint, decimals: number) => formatUnits(BigInt(units), decimals);
 
 // ── stock x402 wiring ──────────────────────────────────────────────────────────────────────────────
 const server = new x402ResourceServer(
@@ -130,16 +138,16 @@ async function sendUsdc(network: string, to: `0x${string}`, amount: string) {
 
 /** Add human-readable fields and links to a module row. */
 function view(r: Redeem) {
-  const label = destinationLabel(r.destinationAsset);
+  const d = describeAsset(r.destinationAsset);
+  const saved = dests.list().find((x) => x.assetId === r.destinationAsset && x.account === r.recipient);
   return {
     ...r,
     network: `${NETWORKS[r.network]?.name ?? r.network} (${r.network})`,
     amountIn: usdc(r.amountIn),
-    destination: `${label} → ${r.recipient}`,
+    destination: saved?.alias,
+    receives: d ? `≈ ${fmt(r.quote.amountOut, d.decimals)} ${d.token} on ${d.chain} → ${r.recipient}` : `${r.quote.amountOut} units → ${r.recipient}`,
     transferExplorer: r.txHash ? `${NETWORKS[r.network]?.explorerTx}${r.txHash}` : undefined,
-    destinationLinks: r.destinationTxs?.map(
-      (t) => t.explorerUrl || (label.startsWith("near-") ? `https://nearblocks.io/txns/${t.hash}` : t.hash),
-    ),
+    destinationLinks: r.destinationTxs?.map((t) => t.explorerUrl || (d ? `${d.explorerTx}${t.hash}` : t.hash)),
   };
 }
 
@@ -154,10 +162,22 @@ m.get("/balances", (_req, res) => {
   );
 });
 
-m.get("/destinations", async (_req, res) => res.json(await module("/v1/destinations")));
+m.get("/destinations", (_req, res) => res.json(dests.list()));
+
+/** POST /merchant/destinations { chain, token, account, alias? } — validate against the catalog and save. */
+m.post("/destinations", (req, res) => {
+  try {
+    const d = dests.add((req.body ?? {}) as Record<string, unknown>);
+    console.log(`[merchant] destination ${d.alias}: ${d.token} on ${d.chain} → ${d.account}`);
+    return res.status(201).json(d);
+  } catch (e) {
+    if (e instanceof ValidationError) throw new ApiError(400, e.message);
+    throw e;
+  }
+});
 
 /**
- * POST /merchant/redeem  { originNetwork, to?, recipient?, amount?, dry?, delaySec? }
+ * POST /merchant/redeem  { originNetwork, to, amount?, dry?, delaySec? }   (`to` = alias of a saved destination)
  *   dry: true  → preview only.
  *   otherwise  → quote, sign + send the transfer from the custodied wallet, report, decrement the tally.
  *   delaySec   → demo-only: wait before sending (late-send / refund path).
@@ -167,10 +187,13 @@ m.post("/redeem", async (req, res) => {
   const network = String(b.originNetwork ?? "");
   const n = NETWORKS[network];
   if (!n || !networks.includes(network as Network)) throw new ApiError(400, `originNetwork must be one of ${networks.join(", ")}`);
-  const recipient = String(b.recipient ?? cfg.redeemRecipient ?? "");
-  if (!recipient) throw new ApiError(400, "recipient is required (or set REDEEM_RECIPIENT)");
-  const to = String(b.to ?? "near-usdc");
-  const destinationAsset = resolveDestination(to);
+  const to = String(b.to ?? "");
+  const dest = dests.get(to);
+  if (!dest) {
+    const aliases = dests.list().map((d) => d.alias);
+    throw new ApiError(400, aliases.length ? `to must be a saved destination: ${aliases.join(", ")}` : "to must be a saved destination; add one with POST /merchant/destinations");
+  }
+  const { assetId: destinationAsset, account: recipient } = dest;
   const balance = balances[network] ?? "0";
   const amount = String(b.amount ?? balance);
   if (!/^[1-9]\d*$/.test(amount)) throw new ApiError(400, `nothing to redeem on ${n.name}: balance is ${usdc(balance)} (buyers pay first) or amount is invalid`);
@@ -182,8 +205,9 @@ m.post("/redeem", async (req, res) => {
     return res.json({
       dry: true,
       redeem: `${usdc(amount)} on ${n.name}`,
-      receive: `≈ ${formatUnits(BigInt(p.amountOut), 6)} ${destinationLabel(destinationAsset)} → ${recipient}`,
-      minimumReceive: formatUnits(BigInt(p.minAmountOut), 6),
+      to: dest.alias,
+      receive: `≈ ${fmt(p.amountOut, dest.decimals)} ${dest.token} on ${dest.chain} → ${recipient}`,
+      minimumReceive: fmt(p.minAmountOut, dest.decimals),
       estimatedSeconds: p.timeEstimateSec,
     });
   }
@@ -197,7 +221,7 @@ m.post("/redeem", async (req, res) => {
     throw new ApiError(409, `an open redeem (${open.redeemId}) for ${usdc(open.amountIn)} → ${open.recipient} is pending on ${n.name}; retry with the same parameters or wait until ${open.quote.deadline}`);
   }
   const r = open ?? (await module<Redeem>("/v1/redeems", { method: "POST", body: JSON.stringify(Object.fromEntries(q)) }));
-  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}${open ? " (retry)" : ""}: ${usdc(amount)} on ${n.name} → ${to} ${recipient} | deposit ${r.depositAddress}`);
+  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}${open ? " (retry)" : ""}: ${usdc(amount)} on ${n.name} → ${dest.alias} (${dest.token} on ${dest.chain}, ${recipient}) | deposit ${r.depositAddress}`);
   if (Number(b.delaySec) > 0) {
     console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: waiting ${String(b.delaySec)}s before sending (demo)`);
     await sleep(Number(b.delaySec) * 1000);
@@ -222,6 +246,6 @@ app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
 
 app.listen(cfg.port, () => {
   console.log(
-    `gateway on :${cfg.port} | GET /article $${cfg.priceUsd} on ${networks.join(", ")} | merchant wallet ${merchant.address} (custodied) | module ${cfg.moduleUrl} | merchant API /merchant/{balances,destinations,redeem,redeems}`,
+    `gateway on :${cfg.port} | GET /article $${cfg.priceUsd} on ${networks.join(", ")} | merchant wallet ${merchant.address} (custodied) | module ${cfg.moduleUrl} | ${dests.list().length} saved destination(s) | merchant API /merchant/{balances,destinations,redeem,redeems}`,
   );
 });

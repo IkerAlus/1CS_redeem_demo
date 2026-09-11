@@ -3,4 +3,5 @@ dist/
 .env
 ledger.json
 balances.json
+destinations.json
 .DS_Store
