@@ -1,21 +1,21 @@
 # 1CS Redeem Demo
 
-Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/), with one transfer signed from their own wallet and no custody in between. The repo contains a stand-in x402 gateway (stock middleware plus a balance tally), a buyer script, the redeem module (quote, payment instructions, swap tracking, ledger) and a merchant CLI that plays the dashboard. Mainnet only, cent-sized amounts.
+Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/) with a single API call. **The merchant's accumulation wallet on the payment network is assumed to be controlled by the gateway service (custodial):** the gateway quotes, signs the outbound transfer and tracks delivery, so the merchant never builds or signs a transaction. The repo contains a stand-in x402 gateway (stock middleware, a balance tally and the merchant REST API), a buyer script, and the redeem module (1Click quotes, swap tracking, ledger). Mainnet only, cent-sized amounts.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    B["Buyer agent<br/>standard x402 client"] -- "1. pays USDC per request" --> G["Gateway (stock x402)<br/>Coinbase facilitator settles"]
-    G -- "2. USDC lands, balance tallied" --> W["Merchant wallet<br/>on the payment network"]
-    M["Merchant CLI<br/>(the dashboard)"] -- "3. preview + confirm" --> R["Redeem module<br/>1Click quote · ledger · tracker"]
-    R -- "4. quote" --> N["NEAR Intents 1Click"]
-    W -- "5. one transfer to the<br/>1Click deposit address" --> N
-    N -- "6. swap + payout" --> D["Merchant's chosen<br/>chain and token"]
-    R -. "7. status until delivered" .-> N
+    B["Buyer agent<br/>standard x402 client"] -- "1. pays USDC per request" --> G["Gateway (stock x402)<br/>+ balance tally + merchant API"]
+    G -- "2. USDC lands, balance tallied" --> W["Merchant wallet<br/>(gateway-custodied)"]
+    M["Merchant<br/>(curl = the dashboard)"] -- "3. GET balances · POST redeem" --> G
+    G -- "4. quote · report tx · status" --> R["Redeem module<br/>1Click quote · ledger · tracker"]
+    R -- "5. quote + tracking" --> N["NEAR Intents 1Click"]
+    W -- "6. gateway signs one transfer<br/>to the 1Click deposit address" --> N
+    N -- "7. swap + payout" --> D["Merchant's chosen<br/>chain and token"]
 ```
 
-Two processes (`gateway` on :4021, `module` on :4022) and two scripts (`buy`, `redeem`). The gateway is unmodified x402 apart from a ten-line balance tally; everything 1Click-specific lives in the module.
+Two processes (`gateway` on :4021, `module` on :4022) and one script (`buy`). The merchant needs nothing installed: the dashboard is the gateway's `/merchant/*` REST API, driven here with `curl`. Everything 1Click-specific lives in the module.
 
 ## Components
 
@@ -25,8 +25,9 @@ Two processes (`gateway` on :4021, `module` on :4022) and two scripts (`buy`, `r
 |---|---|---|
 | Buyer agent | `scripts/buyer.ts` | Any x402-paying client or AI agent; a stock `@x402/fetch` client with a funded wallet. |
 | Gateway | `src/gateway.ts` | The operator's x402 gateway: stock middleware plus the Coinbase facilitator, paying into the merchant wallet exactly as today. |
-| Balance tally | `src/gateway.ts` → `balances.json` | The gateway's own settlement bookkeeping: adds each settled payment, subtracts what the merchant redeems (`POST /balances/redeemed`, called by the CLI as the dashboard backend would). |
-| Merchant CLI | `scripts/redeem.ts` | Two things at once: the dashboard's Redeem screen (balance, preview, confirm, history) and the merchant's wallet signing the transfer. |
+| Balance tally | `src/gateway.ts` → `balances.json` | The gateway's own settlement bookkeeping: adds each settled payment, subtracts each redeem. |
+| Merchant API | `src/gateway.ts` → `/merchant/*` | The dashboard's Redeem screen as REST: balances, destinations, preview / redeem, history. Driven with `curl` here; a UI in production. |
+| Custody signer | `src/gateway.ts` | The gateway holds the merchant wallet's key and signs the redeem transfer. In production this is the operator's custody signer (or wallet-connect if merchants keep their own wallets). |
 
 **New for this service** (what would ship to production, in some form):
 
@@ -35,7 +36,7 @@ Two processes (`gateway` on :4021, `module` on :4022) and two scripts (`buy`, `r
 | Redeem module | `src/module.ts`, `src/redeem.ts` | The HTTP service the gateway's dashboard backend calls: preview and confirm a redeem (1Click quotes), take the merchant's tx hash, track the swap to delivery. |
 | Ledger | `src/ledger.ts` | One record per redeem, from instructions to delivery or refund; a JSON file here, a database table in production. |
 | Network table | `src/networks.ts` | The payment networks a merchant can redeem from, their USDC contracts and 1Click asset ids, plus destination aliases. |
-| Dashboard and API changes | not in this repo | The operator's side: a Redeem screen and public-API endpoints proxying the four module calls, wallet-connect or a custody signer for the transfer, and balance decrement/restore on confirm, expiry and refund. |
+| Dashboard and API changes | sketched by `/merchant/*` | The operator's side: a Redeem screen and public-API endpoints over the module calls, the custody signer, and balance decrement/restore on confirm, expiry and refund. |
 
 ## Before you start
 
@@ -46,8 +47,8 @@ Everything below is needed only once. Fill the values into `.env` (copy `.env.ex
 | Coinbase Developer Platform **Secret** API key | portal.cdp.coinbase.com → API keys → Secret | Facilitator verify/settle on mainnet. Free tier: 1,000 settlements/month. |
 | 1Click partner JWT (optional) | partners.near-intents.org | Removes the 0.2 % fee on quotes. Everything works without it. |
 | Buyer wallet | fresh EOA | ~3 USDC on each network below. No gas needed. |
-| Merchant wallet | fresh EOA | A few cents of gas per network (ETH on Base and Arbitrum, POL on Polygon). No USDC; it receives the payments. |
-| Seller destination | a NEAR account (and optionally a Tron address) | Where redeems are delivered. |
+| Merchant wallet | fresh EOA, key held by the gateway | A few cents of gas per network (ETH on Base and Arbitrum, POL on Polygon). No USDC; it receives the payments and the gateway signs redeems from it. |
+| Seller destination | a NEAR account (and optionally a Tron address) | Where redeems are delivered; default via `REDEEM_RECIPIENT`. |
 
 Native USDC contracts for funding the buyer (not the bridged `USDC.e` variants):
 
@@ -62,14 +63,22 @@ Then:
 ```bash
 npm install
 cp .env.example .env
-npm run gateway      # :4021
-npm run module       # :4022
-npm run buy -- --network eip155:42161 --times 5
-npm run redeem -- --network eip155:42161 --to near-usdc --dry        # balance + preview (recipient from REDEEM_RECIPIENT)
-npm run redeem -- --network eip155:42161 --to near-usdc              # full redeem
-npm run redeem -- --list                                             # history
+npm run gateway      # terminal 1, :4021
+npm run module       # terminal 2, :4022
+npm run buy -- --network eip155:42161 --times 3    # terminal 3: a buyer pays three times
 ```
 
-`--recipient` overrides `REDEEM_RECIPIENT`, `--amount <units>` redeems part of the balance, `--delay 90` sends late on purpose to show the refund path, `--yes` skips the confirmation prompt.
+The merchant then uses the gateway's API, nothing to install:
+
+```bash
+curl -s localhost:4021/merchant/balances
+curl -s localhost:4021/merchant/destinations
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"network":"eip155:42161","to":"near-usdc","dry":true}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"network":"eip155:42161","to":"near-usdc"}'
+curl -s localhost:4021/merchant/redeems/<redeemId>     # poll until phase SUCCESS (about a minute)
+curl -s localhost:4021/merchant/redeems                # history
+```
+
+`POST /merchant/redeem` fields: `network` (required), `to` (destination alias or 1Click asset id, default `near-usdc`), `recipient` (default `REDEEM_RECIPIENT`), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds.
 
 Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 2 USDC to USDT on Tron. Minimums move; a `--dry` preview prints the current one when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.

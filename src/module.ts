@@ -11,7 +11,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import { ApiError } from "@defuse-protocol/one-click-sdk-typescript";
 import { moduleConfig } from "./config.js";
 import { Ledger } from "./ledger.js";
-import { NETWORKS, resolveDestination } from "./networks.js";
+import { DESTINATIONS, NETWORKS, resolveDestination } from "./networks.js";
 import { HttpError, RedeemService, sdkClient, type RedeemInput } from "./redeem.js";
 
 export function parseInput(q: Record<string, unknown>): RedeemInput {
@@ -56,6 +56,14 @@ export function createApp(svc: RedeemService, ledger: Ledger) {
   });
   app.get("/v1/redeems", (req, res) => {
     res.json(ledger.list(typeof req.query.merchantId === "string" ? req.query.merchantId : undefined));
+  });
+  app.get("/v1/destinations", (_req, res) => {
+    res.json(
+      Object.entries(DESTINATIONS).map(([alias, assetId]) => {
+        const [chain, token] = alias.split("-");
+        return { alias, chain, token: token?.toUpperCase(), assetId };
+      }),
+    );
   });
 
   // Express 5 routes async errors here. 1CS 4xx bodies pass through (they carry "try at least X" hints).

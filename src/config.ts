@@ -27,6 +27,9 @@ export const gatewayConfig = () => ({
   priceUsd: opt("PRICE_USD", "0.05"),
   networks: opt("NETWORKS", "eip155:8453,eip155:137,eip155:42161").split(","),
   merchantWallet: need("MERCHANT_WALLET") as `0x${string}`,
+  merchantPrivateKey: need("MERCHANT_PRIVATE_KEY") as `0x${string}`, // custodied by the gateway stand-in
+  redeemRecipient: process.env.REDEEM_RECIPIENT || undefined, // default destination for POST /merchant/redeem
+  moduleUrl: opt("MODULE_URL", "http://localhost:4022"),
   balancesFile: opt("BALANCES_FILE", "./balances.json"),
   cdpApiKeyId: need("CDP_API_KEY_ID"),
   cdpApiKeySecret: need("CDP_API_KEY_SECRET"),

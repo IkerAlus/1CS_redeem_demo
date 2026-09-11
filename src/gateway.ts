@@ -1,26 +1,46 @@
 /**
  * Gateway stand-in: a stock x402 resource server (reference middleware + Coinbase facilitator) selling
- * `GET /article`, paying into the merchant's wallet on each network — i.e. what an x402 gateway does today.
- * The only addition is a ten-line balance tally per network (`GET /balances`), standing in for the
- * gateway's own settlement bookkeeping, which the redeem flow reads.
+ * `GET /article`, paying into the merchant wallet on each network — what an x402 gateway does today —
+ * plus the two things the redeem feature adds on the gateway side:
+ *
+ *   - a balance tally per network (the gateway's settlement bookkeeping), and
+ *   - a merchant REST API (`/merchant/*`) that plays the dashboard: balances, destinations,
+ *     preview / redeem, history. The merchant wallet is **custodied by the gateway**: on a redeem the
+ *     gateway quotes through the redeem module, signs the USDC transfer itself, reports the tx, tracks.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import express from "express";
+import { setTimeout as sleep } from "node:timers/promises";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { Network } from "@x402/core/types";
 import { ExactEvmScheme } from "@x402/evm/exact/server";
 import { createFacilitatorConfig } from "@coinbase/x402";
+import { createPublicClient, createWalletClient, erc20Abi, formatUnits, http } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { arbitrum, base, polygon } from "viem/chains";
 import { gatewayConfig } from "./config.js";
+import type { Redeem } from "./ledger.js";
+import { destinationLabel, NETWORKS, resolveDestination } from "./networks.js";
 
 const cfg = gatewayConfig();
 const networks = cfg.networks as Network[];
+const MERCHANT_ID = "demo"; // single merchant in the demo
+
+// ── the merchant wallet, custodied by the gateway ─────────────────────────────────────────────────
+const merchant = privateKeyToAccount(cfg.merchantPrivateKey);
+if (merchant.address.toLowerCase() !== cfg.merchantWallet.toLowerCase()) {
+  throw new Error(`MERCHANT_PRIVATE_KEY controls ${merchant.address}, not MERCHANT_WALLET ${cfg.merchantWallet}`);
+}
+const chains = { 8453: base, 137: polygon, 42161: arbitrum } as const;
+const usdc = (units: string | bigint) => `${formatUnits(BigInt(units), 6)} USDC`;
 
 // ── balance tally (the gateway's bookkeeping, stand-in) ────────────────────────────────────────────
 const balances: Record<string, string> = existsSync(cfg.balancesFile)
   ? (JSON.parse(readFileSync(cfg.balancesFile, "utf8")) as Record<string, string>)
   : {};
+const saveBalances = () => writeFileSync(cfg.balancesFile, JSON.stringify(balances, null, 2));
 
 // ── stock x402 wiring ──────────────────────────────────────────────────────────────────────────────
 const server = new x402ResourceServer(
@@ -32,11 +52,12 @@ server.onAfterSettle(async ({ requirements, result }) => {
   if (!result.success) return;
   const n = requirements.network;
   balances[n] = (BigInt(balances[n] ?? "0") + BigInt(result.amount ?? requirements.amount)).toString();
-  writeFileSync(cfg.balancesFile, JSON.stringify(balances, null, 2));
+  saveBalances();
   console.log(`settled ${requirements.amount} on ${n} | tx ${result.transaction} | balance ${balances[n]}`);
 });
 
 const app = express();
+app.set("json spaces", 2); // readable curl output
 app.use(
   paymentMiddleware(
     {
@@ -54,24 +75,135 @@ app.use(
     server,
   ),
 );
-
 app.get("/article", (_req, res) => {
   res.json({ title: "Paid article", body: "Thanks for paying. This is the content behind the paywall." });
 });
-app.get("/balances", (_req, res) => res.json(balances));
-// The dashboard tells the gateway a redeem left the wallet (production: decrement on confirm, restore on refund).
-app.post("/balances/redeemed", express.json(), (req, res) => {
-  const { network, amount } = req.body as { network?: string; amount?: string };
-  if (!network || !/^\d+$/.test(amount ?? "")) return res.status(400).json({ error: "network and integer amount required" });
-  const left = BigInt(balances[network] ?? "0") - BigInt(amount!);
-  balances[network] = (left < 0n ? 0n : left).toString();
-  writeFileSync(cfg.balancesFile, JSON.stringify(balances, null, 2));
-  console.log(`redeemed ${amount} on ${network} | balance ${balances[network]}`);
-  return res.json(balances);
+
+// ── merchant API (the dashboard, as REST) ──────────────────────────────────────────────────────────
+class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function module<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(cfg.moduleUrl + path, { ...init, headers: { "content-type": "application/json" } }).catch(
+    (e: Error) => {
+      throw new ApiError(503, `redeem module unreachable at ${cfg.moduleUrl}: ${e.message}`);
+    },
+  );
+  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new ApiError(res.status, String(body.message ?? body.error ?? res.statusText));
+  return body as T;
+}
+
+/** Sign and send `amount` USDC from the custodied merchant wallet on `network`; resolves when mined. */
+async function sendUsdc(network: string, to: `0x${string}`, amount: string) {
+  const n = NETWORKS[network]!;
+  const chain = chains[n.chainId as keyof typeof chains];
+  const pub = createPublicClient({ chain, transport: http(n.rpc) });
+  const wallet = createWalletClient({ account: merchant, chain, transport: http(n.rpc) });
+  const [onChain, gas] = await Promise.all([
+    pub.readContract({ address: n.usdc, abi: erc20Abi, functionName: "balanceOf", args: [merchant.address] }),
+    pub.getBalance({ address: merchant.address }),
+  ]);
+  if (onChain < BigInt(amount)) throw new ApiError(409, `merchant wallet holds ${usdc(onChain)} on ${n.name}, below ${usdc(amount)}`);
+  if (gas === 0n) throw new ApiError(503, `merchant wallet has no ${chain.nativeCurrency.symbol} for gas on ${n.name}`);
+  const hash = await wallet.writeContract({ address: n.usdc, abi: erc20Abi, functionName: "transfer", args: [to, BigInt(amount)] });
+  const receipt = await pub.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") throw new ApiError(502, `transfer ${hash} reverted`);
+  return { hash, explorer: `${n.explorerTx}${hash}` };
+}
+
+/** Add human-readable fields and links to a module row. */
+function view(r: Redeem) {
+  const label = destinationLabel(r.destinationAsset);
+  return {
+    ...r,
+    network: `${NETWORKS[r.network]?.name ?? r.network} (${r.network})`,
+    amountIn: usdc(r.amountIn),
+    destination: `${label} → ${r.recipient}`,
+    transferExplorer: r.txHash ? `${NETWORKS[r.network]?.explorerTx}${r.txHash}` : undefined,
+    destinationLinks: r.destinationTxs?.map(
+      (t) => t.explorerUrl || (label.startsWith("near-") ? `https://nearblocks.io/txns/${t.hash}` : t.hash),
+    ),
+  };
+}
+
+const m = express.Router();
+m.use(express.json());
+
+m.get("/balances", (_req, res) => {
+  res.json(
+    Object.fromEntries(
+      networks.map((n) => [n, { network: NETWORKS[n]?.name, units: balances[n] ?? "0", usdc: formatUnits(BigInt(balances[n] ?? "0"), 6) }]),
+    ),
+  );
+});
+
+m.get("/destinations", async (_req, res) => res.json(await module("/v1/destinations")));
+
+/**
+ * POST /merchant/redeem  { network, to?, recipient?, amount?, dry?, delaySec? }
+ *   dry: true  → preview only.
+ *   otherwise  → quote, sign + send the transfer from the custodied wallet, report, decrement the tally.
+ *   delaySec   → demo-only: wait before sending (late-send / refund path).
+ */
+m.post("/redeem", async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const network = String(b.network ?? "");
+  const n = NETWORKS[network];
+  if (!n || !networks.includes(network as Network)) throw new ApiError(400, `network must be one of ${networks.join(", ")}`);
+  const recipient = String(b.recipient ?? cfg.redeemRecipient ?? "");
+  if (!recipient) throw new ApiError(400, "recipient is required (or set REDEEM_RECIPIENT)");
+  const to = String(b.to ?? "near-usdc");
+  const destinationAsset = resolveDestination(to);
+  const balance = balances[network] ?? "0";
+  const amount = String(b.amount ?? balance);
+  if (!/^[1-9]\d*$/.test(amount)) throw new ApiError(400, `nothing to redeem on ${n.name}: balance is ${usdc(balance)} (buyers pay first) or amount is invalid`);
+  if (BigInt(amount) > BigInt(balance)) throw new ApiError(409, `${usdc(amount)} exceeds the redeemable balance ${usdc(balance)} on ${n.name}`);
+
+  const q = new URLSearchParams({ merchantId: MERCHANT_ID, network, fromWallet: merchant.address, amount, destinationAsset, recipient });
+  if (b.dry) {
+    const p = await module<{ amountOut: string; minAmountOut: string; timeEstimateSec: number }>(`/v1/redeem/preview?${q}`);
+    return res.json({
+      dry: true,
+      redeem: `${usdc(amount)} on ${n.name}`,
+      receive: `≈ ${formatUnits(BigInt(p.amountOut), 6)} ${destinationLabel(destinationAsset)} → ${recipient}`,
+      minimumReceive: formatUnits(BigInt(p.minAmountOut), 6),
+      estimatedSeconds: p.timeEstimateSec,
+    });
+  }
+
+  const r = await module<Redeem>("/v1/redeems", { method: "POST", body: JSON.stringify(Object.fromEntries(q)) });
+  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: ${usdc(amount)} on ${n.name} → ${to} ${recipient} | deposit ${r.depositAddress}`);
+  if (Number(b.delaySec) > 0) {
+    console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: waiting ${String(b.delaySec)}s before sending (demo)`);
+    await sleep(Number(b.delaySec) * 1000);
+  }
+  const tx = await sendUsdc(network, r.depositAddress as `0x${string}`, r.amountIn);
+  const funded = await module<Redeem>(`/v1/redeems/${r.redeemId}/tx`, { method: "POST", body: JSON.stringify({ txHash: tx.hash }) });
+  balances[network] = (BigInt(balance) - BigInt(amount)).toString();
+  saveBalances();
+  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: sent ${tx.explorer} | balance left ${balances[network]}`);
+  return res.status(201).json({ ...view(funded), track: `GET /merchant/redeems/${r.redeemId}` });
+});
+
+m.get("/redeems", async (_req, res) => res.json((await module<Redeem[]>(`/v1/redeems?merchantId=${MERCHANT_ID}`)).map(view)));
+m.get("/redeems/:id", async (req, res) => res.json(view(await module<Redeem>(`/v1/redeems/${req.params.id}`))));
+
+app.use("/merchant", m);
+app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  if (err instanceof ApiError) return res.status(err.status).json({ error: err.message });
+  console.error(err);
+  return res.status(500).json({ error: (err as Error).message });
 });
 
 app.listen(cfg.port, () => {
   console.log(
-    `gateway on :${cfg.port} | GET /article $${cfg.priceUsd} on ${networks.join(", ")} | payTo ${cfg.merchantWallet} | balances ${cfg.balancesFile}`,
+    `gateway on :${cfg.port} | GET /article $${cfg.priceUsd} on ${networks.join(", ")} | merchant wallet ${merchant.address} (custodied) | module ${cfg.moduleUrl} | merchant API /merchant/{balances,destinations,redeem,redeems}`,
   );
 });
