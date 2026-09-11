@@ -112,7 +112,17 @@ async function sendUsdc(network: string, to: `0x${string}`, amount: string) {
   ]);
   if (onChain < BigInt(amount)) throw new ApiError(409, `merchant wallet holds ${usdc(onChain)} on ${n.name}, below ${usdc(amount)}`);
   if (gas === 0n) throw new ApiError(503, `merchant wallet has no ${chain.nativeCurrency.symbol} for gas on ${n.name}`);
-  const hash = await wallet.writeContract({ address: n.usdc, abi: erc20Abi, functionName: "transfer", args: [to, BigInt(amount)] });
+  // L2 base fees move in bursts between estimate and submit; cap at 2× the current base fee so the
+  // transaction is never underpriced (the wallet pays the actual base fee, not the cap).
+  const fees = await pub.estimateFeesPerGas();
+  const hash = await wallet.writeContract({
+    address: n.usdc,
+    abi: erc20Abi,
+    functionName: "transfer",
+    args: [to, BigInt(amount)],
+    maxFeePerGas: fees.maxFeePerGas * 2n,
+    maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
+  });
   const receipt = await pub.waitForTransactionReceipt({ hash });
   if (receipt.status !== "success") throw new ApiError(502, `transfer ${hash} reverted`);
   return { hash, explorer: `${n.explorerTx}${hash}` };
@@ -178,8 +188,16 @@ m.post("/redeem", async (req, res) => {
     });
   }
 
-  const r = await module<Redeem>("/v1/redeems", { method: "POST", body: JSON.stringify(Object.fromEntries(q)) });
-  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: ${usdc(amount)} on ${n.name} → ${to} ${recipient} | deposit ${r.depositAddress}`);
+  // Reuse an open REQUESTED redeem for this network (e.g. a previous attempt whose transfer failed):
+  // its 1Click deposit address is still valid, so we retry the transfer instead of minting a new quote.
+  const open = (await module<Redeem[]>(`/v1/redeems?merchantId=${MERCHANT_ID}`)).find(
+    (x) => x.network === network && x.phase === "REQUESTED",
+  );
+  if (open && (open.amountIn !== amount || open.destinationAsset !== destinationAsset || open.recipient !== recipient)) {
+    throw new ApiError(409, `an open redeem (${open.redeemId}) for ${usdc(open.amountIn)} → ${open.recipient} is pending on ${n.name}; retry with the same parameters or wait until ${open.quote.deadline}`);
+  }
+  const r = open ?? (await module<Redeem>("/v1/redeems", { method: "POST", body: JSON.stringify(Object.fromEntries(q)) }));
+  console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}${open ? " (retry)" : ""}: ${usdc(amount)} on ${n.name} → ${to} ${recipient} | deposit ${r.depositAddress}`);
   if (Number(b.delaySec) > 0) {
     console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: waiting ${String(b.delaySec)}s before sending (demo)`);
     await sleep(Number(b.delaySec) * 1000);
