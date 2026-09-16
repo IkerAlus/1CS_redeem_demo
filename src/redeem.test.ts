@@ -3,7 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ApiError, type GetExecutionStatusResponse, type QuoteResponse } from "@defuse-protocol/one-click-sdk-typescript";
+import {
+  ApiError,
+  type GetExecutionStatusResponse,
+  type QuoteResponse,
+} from "@defuse-protocol/one-click-sdk-typescript";
 import { Ledger } from "./ledger.js";
 import { buildQuoteRequest, HttpError, RedeemService, type OneClick, type RedeemInput } from "./redeem.js";
 
@@ -48,7 +52,7 @@ const statusResponse = (status: string, hashes: string[] = []): GetExecutionStat
 
 /** Programmable fake 1CS. */
 function fake(overrides: Partial<OneClick> = {}) {
-  const calls = { quote: [] as unknown[], submit: [] as unknown[], status: 0 };
+  const calls = { quote: [] as unknown[], submit: [] as unknown[] };
   const oc: OneClick = {
     quote: async (req) => {
       calls.quote.push(req);
@@ -58,10 +62,7 @@ function fake(overrides: Partial<OneClick> = {}) {
       calls.submit.push([d, t]);
       return {};
     },
-    status: async () => {
-      calls.status++;
-      return statusResponse("PENDING_DEPOSIT");
-    },
+    status: async () => statusResponse("PENDING_DEPOSIT"),
     ...overrides,
   };
   return { oc, calls };
@@ -104,14 +105,23 @@ test("create stores a REQUESTED row with instructions; a second open redeem on t
   assert.equal(row.amountIn, "250000");
   assert.equal(row.asset, "0xaf88d065e77c8cC2239327C5EDb3A432268e5831");
   assert.equal(row.fromWallet, input.fromWallet);
-  assert.ok(Date.parse(row.quote.deadline) < Date.parse("2099-01-01T00:00:00Z"), "stores OUR cutoff, not the address lifetime");
+  assert.ok(
+    Date.parse(row.quote.deadline) < Date.parse("2099-01-01T00:00:00Z"),
+    "stores OUR cutoff, not the address lifetime",
+  );
   await assert.rejects(svc.create(input), (e: HttpError) => e.status === 409);
   await svc.create({ ...input, network: "eip155:8453" }); // another network is fine
   assert.equal(ledger.open().length, 2);
 });
 
 test("reportTx moves to FUNDED and notifies 1CS; a failing deposit/submit is ignored", async () => {
-  const { oc, calls } = fake({
+  const ok = fake();
+  const okSvc = service(ok.oc);
+  const okRow = await okSvc.create(input);
+  await okSvc.reportTx(okRow.redeemId, "0xabc");
+  assert.deepEqual(ok.calls.submit, [[okRow.depositAddress, "0xabc"]]);
+
+  const { oc } = fake({
     submitDeposit: async () => {
       throw new Error("1CS down");
     },
@@ -121,7 +131,6 @@ test("reportTx moves to FUNDED and notifies 1CS; a failing deposit/submit is ign
   const funded = await svc.reportTx(row.redeemId, "0xabc");
   assert.equal(funded.phase, "FUNDED");
   assert.equal(funded.txHash, "0xabc");
-  assert.equal(calls.submit.length, 0); // our override threw before recording — behaviour is "ignored"
   await assert.rejects(svc.reportTx(row.redeemId, "0xabc"), (e: HttpError) => e.status === 409);
   await assert.rejects(svc.reportTx("nope", "0xabc"), (e: HttpError) => e.status === 404);
 });

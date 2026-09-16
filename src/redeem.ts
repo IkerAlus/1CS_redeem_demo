@@ -52,12 +52,7 @@ export type RedeemInput = {
 
 const TERMINAL = new Set(["SUCCESS", "REFUNDED", "FAILED"]);
 
-export function buildQuoteRequest(
-  i: RedeemInput,
-  dry: boolean,
-  windowMin: number,
-  referral?: string,
-): QuoteRequest {
+export function buildQuoteRequest(i: RedeemInput, dry: boolean, windowMin: number, referral?: string): QuoteRequest {
   const net = NETWORKS[i.network];
   if (!net) throw new HttpError(400, `unsupported network ${i.network}`);
   return {
@@ -88,7 +83,6 @@ export class RedeemService {
   async preview(i: RedeemInput) {
     const q = (await this.oc.quote(buildQuoteRequest(i, true, this.opts.windowMin, this.opts.referral))).quote;
     return {
-      amountIn: q.amountIn,
       amountOut: q.amountOut,
       minAmountOut: q.minAmountOut,
       amountOutUsd: q.amountOutUsd,
@@ -136,11 +130,13 @@ export class RedeemService {
     row.txHash = txHash;
     row.phase = "FUNDED";
     this.ledger.put(row);
-    console.log(`[redeem ${redeemId.slice(0, 8)}] FUNDED | ${row.amountIn} on ${row.network} → ${row.recipient} | tx ${txHash}`);
+    console.log(
+      `[redeem ${redeemId.slice(0, 8)}] FUNDED | ${row.amountIn} on ${row.network} → ${row.recipient} | tx ${txHash}`,
+    );
     try {
       await this.oc.submitDeposit(row.depositAddress, txHash);
     } catch (e) {
-      console.warn(`[redeem ${redeemId}] deposit/submit failed (ignored): ${(e as Error).message}`);
+      console.warn(`[redeem ${redeemId.slice(0, 8)}] deposit/submit failed (ignored): ${(e as Error).message}`);
     }
     return row;
   }
@@ -163,7 +159,7 @@ export class RedeemService {
         if (e instanceof ApiError && e.status === 404) {
           status = row.oneClickStatus = "PENDING_DEPOSIT"; // 1CS knows nothing about the address until funds arrive
         } else {
-          console.warn(`[redeem ${row.redeemId}] status poll failed: ${(e as Error).message}`);
+          console.warn(`[redeem ${row.redeemId.slice(0, 8)}] status poll failed: ${(e as Error).message}`);
         }
       }
       if (
@@ -174,7 +170,8 @@ export class RedeemService {
         row.phase = "EXPIRED"; // nothing arrived before our refund cutoff
       }
       const after = `${row.phase}/${row.oneClickStatus ?? ""}`;
-      if (after !== before) console.log(`[redeem ${row.redeemId.slice(0, 8)}] ${row.phase} | 1CS ${row.oneClickStatus ?? "-"}`);
+      if (after !== before)
+        console.log(`[redeem ${row.redeemId.slice(0, 8)}] ${row.phase} | 1CS ${row.oneClickStatus ?? "-"}`);
       this.ledger.put(row);
     }
   }

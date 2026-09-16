@@ -8,7 +8,7 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-export type Chain = {
+type Chain = {
   tokens: Record<string, { assetId: string; decimals: number }>;
   address: RegExp;
   addressHint: string;
@@ -69,7 +69,14 @@ export const CHAINS: Record<string, Chain> = {
   },
 };
 
-export type Destination = { alias: string; chain: string; token: string; account: string; assetId: string; decimals: number };
+export type Destination = {
+  alias: string;
+  chain: string;
+  token: string;
+  account: string;
+  assetId: string;
+  decimals: number;
+};
 
 export class ValidationError extends Error {}
 
@@ -80,7 +87,10 @@ export function validateDestination(input: { chain?: unknown; token?: unknown; a
   if (!c) throw new ValidationError(`chain must be one of ${Object.keys(CHAINS).join(", ")}`);
   const token = String(input.token ?? "").toUpperCase();
   const t = c.tokens[token];
-  if (!t) throw new ValidationError(`token on ${chain} must be one of ${Object.keys(c.tokens).join(", ")} (1Click lists no other USDC/USDT there)`);
+  if (!t)
+    throw new ValidationError(
+      `token on ${chain} must be one of ${Object.keys(c.tokens).join(", ")} (1Click lists no other USDC/USDT there)`,
+    );
   const account = String(input.account ?? "").trim();
   if (!c.address.test(account)) throw new ValidationError(`account is not ${c.addressHint}`);
   return { chain, token, account, assetId: t.assetId, decimals: t.decimals };
@@ -111,18 +121,12 @@ export class Destinations {
     return this.rows.find((d) => d.alias === alias);
   }
 
-  /** Validate and save. Default alias is `chain-token`, suffixed `-2`, `-3`… when taken. */
-  add(input: { chain?: unknown; token?: unknown; account?: unknown; alias?: unknown }): Destination {
+  /** Validate and save. The alias is `chain-token`, suffixed `-2`, `-3`… when taken. */
+  add(input: { chain?: unknown; token?: unknown; account?: unknown }): Destination {
     const v = validateDestination(input);
-    let alias = String(input.alias ?? "").trim().toLowerCase();
-    if (alias) {
-      if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(alias)) throw new ValidationError("alias must be 1–32 lowercase letters, digits or dashes");
-      if (this.get(alias)) throw new ValidationError(`alias ${alias} already exists`);
-    } else {
-      const base = `${v.chain}-${v.token.toLowerCase()}`;
-      alias = base;
-      for (let i = 2; this.get(alias); i++) alias = `${base}-${i}`;
-    }
+    const base = `${v.chain}-${v.token.toLowerCase()}`;
+    let alias = base;
+    for (let i = 2; this.get(alias); i++) alias = `${base}-${i}`;
     const row: Destination = { alias, ...v };
     this.rows.push(row);
     writeFileSync(this.file, JSON.stringify(this.rows, null, 2));

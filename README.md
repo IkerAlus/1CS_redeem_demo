@@ -1,6 +1,6 @@
 # 1CS Redeem Demo
 
-Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/) with a single API call. **The merchant's accumulation wallet on the payment network is assumed to be controlled by the gateway service (custodial):** the gateway quotes, signs the outbound transfer and tracks delivery, so the merchant never builds or signs a transaction. The repo contains a stand-in x402 gateway (stock middleware, a balance tally and the merchant REST API), a buyer script, and the redeem module (1Click quotes, swap tracking, ledger). Mainnet only, cent-sized amounts.
+Demo of a "redeem to any chain" payout feature for x402 payment gateways. Buyers pay stablecoins over standard x402 into the merchant's wallet on the payment network, exactly as such gateways work today; the merchant then redeems the accumulated balance to any chain and token supported by the NEAR Intents [1Click Swap API](https://docs.near-intents.org/) with a single API call. **The merchant's accumulation wallet on the payment network is assumed to be controlled by the gateway service (custodial).** The repo contains a stand-in x402 gateway (stock middleware, a balance tally and the merchant REST API), a buyer script, and the redeem module (1Click quotes, swap tracking, ledger). Mainnet only, cent-sized amounts.
 
 ## How it works
 
@@ -36,10 +36,8 @@ Two processes (`gateway` on :4021, `module` on :4022, or both at once with `npm 
 | Redeem module | `src/module.ts`, `src/redeem.ts` | The HTTP service the gateway's dashboard backend calls: preview and confirm a redeem (1Click quotes), take the merchant's tx hash, track the swap to delivery. |
 | Ledger | `src/ledger.ts` | One record per redeem, from instructions to delivery or refund; a JSON file here, a database table in production. |
 | Network table | `src/networks.ts` | The payment networks a merchant can redeem from, their USDC contracts and 1Click asset ids. |
-| Destination catalog and saved destinations | `src/destinations.ts` → `destinations.json` | Which chains and tokens a merchant can be paid out to (near, tron, ethereum, bitcoin, zcash, solana; native token plus USDC/USDT where 1Click lists them), address format checks, and the merchant's saved `{alias, chain, token, account}` list. |
+| Destinations | `src/destinations.ts` → `destinations.json` | The chains and tokens a merchant can be paid out to (near, tron, ethereum, bitcoin, zcash, solana; native token plus USDC/USDT where 1Click lists them) and the merchant's saved `{alias, chain, token, account}` list. |
 | Dashboard and API changes | sketched by `/merchant/*` | The operator's side: a Redeem screen and public-API endpoints over the module calls, the custody signer, and balance decrement/restore on confirm, expiry and refund. |
-
-**Why two processes.** In production the redeem module is one component of the gateway operator's stack, called by their dashboard backend. The demo keeps it as a separate process on its own port so the ownership line is visible: the gateway terminal shows the operator's side, the module terminal shows the part we supply, and the five HTTP calls between them are exactly the integration contract. For a quick run, `npm run demo` starts both in a single terminal with `[gateway]` and `[module ]` prefixed log lines; nothing else changes, the two still talk over localhost and each reaches the facilitator and 1Click on its own.
 
 ## Before you start
 
@@ -51,7 +49,7 @@ Everything below is needed only once. Fill the values into `.env` (copy `.env.ex
 | 1Click partner JWT (optional) | partners.near-intents.org | Removes the 0.2 % fee on quotes. Everything works without it. |
 | Buyer wallet | fresh EOA | ~3 USDC on each network below. No gas needed. |
 | Merchant wallet | fresh EOA, key held by the gateway | A few cents of gas per network (ETH on Base and Arbitrum, POL on Polygon). No USDC; it receives the payments and the gateway signs redeems from it. |
-| Seller destination | a NEAR account (and optionally a Tron address) | Where redeems are delivered; default via `REDEEM_RECIPIENT`. |
+| Payout destination | any account on a supported chain | Added through the merchant API; `REDEEM_RECIPIENT` (a NEAR account) optionally seeds a first one. |
 
 Native USDC contracts for funding the buyer (not the bridged `USDC.e` variants):
 
@@ -82,10 +80,10 @@ curl -s localhost:4021/merchant/redeems/<redeemId>     # poll until phase SUCCES
 curl -s localhost:4021/merchant/redeems                # history
 ```
 
-`POST /merchant/destinations` fields: `chain` (`near`, `tron`, `ethereum`, `bitcoin`, `zcash`, `solana`), `token` (the chain's native token, or `USDC` / `USDT` where 1Click lists them: no USDC on Tron, no stablecoins on Bitcoin or Zcash), `account` (checked against the chain's address format), optional `alias` (default `chain-token`, suffixed `-2`, `-3`… when taken). Returns the saved entry with its 1Click `assetId` and `decimals`.
+`POST /merchant/destinations` fields: `chain` (`near`, `tron`, `ethereum`, `bitcoin`, `zcash`, `solana`), `token` (the chain's native token, `USDC` or `USDT` where 1Click lists them), `account`. Returns the saved entry with its alias (`chain-token`), 1Click `assetId` and `decimals`.
 
 `POST /merchant/redeem` fields: `originNetwork` (required, CAIP-2, the payment network the balance sits on), `to` (required, the alias of a saved destination), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds.
 
 Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 0.28 USDC to USDC on Solana; about 2 USDC to USDT on Tron. Minimums move; a `dry` redeem returns the current one in the 1Click message when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.
 
-Solana note: if the recipient does not yet hold the token, 1Click adds about 0.27 USDC to the quote for creating the recipient's token account (1 USDC in → about 0.72 out). An address that already holds USDC receives about 0.99 for 1 USDC in. Preview with `dry` first.
+Solana note: if the recipient does not yet hold the token, 1Click adds about 0.27 USDC to the quote for creating the recipient's token account (1 USDC in → about 0.72 out).

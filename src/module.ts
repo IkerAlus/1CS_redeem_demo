@@ -14,7 +14,7 @@ import { Ledger } from "./ledger.js";
 import { NETWORKS } from "./networks.js";
 import { HttpError, RedeemService, sdkClient, type RedeemInput } from "./redeem.js";
 
-export function parseInput(q: Record<string, unknown>): RedeemInput {
+function parseInput(q: Record<string, unknown>): RedeemInput {
   const s = (k: string) => {
     const v = q[k];
     if (typeof v !== "string" || !v) throw new HttpError(400, `missing ${k}`);
@@ -34,7 +34,7 @@ export function parseInput(q: Record<string, unknown>): RedeemInput {
   return i;
 }
 
-export function createApp(svc: RedeemService, ledger: Ledger) {
+function createApp(svc: RedeemService, ledger: Ledger) {
   const app = express();
   app.use(express.json());
 

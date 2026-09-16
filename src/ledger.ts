@@ -2,15 +2,15 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-export type Phase = "REQUESTED" | "FUNDED" | "SUCCESS" | "REFUNDED" | "FAILED" | "EXPIRED";
-export const OPEN_PHASES: ReadonlySet<Phase> = new Set(["REQUESTED", "FUNDED"]);
+type Phase = "REQUESTED" | "FUNDED" | "SUCCESS" | "REFUNDED" | "FAILED" | "EXPIRED";
+const OPEN_PHASES: ReadonlySet<Phase> = new Set(["REQUESTED", "FUNDED"]);
 
 export type Redeem = {
   redeemId: string;
   merchantId: string;
   network: string;
   fromWallet: string; // also the 1CS refundTo
-  asset: string; // origin token contract the merchant must send
+  asset: string; // origin token contract to send to depositAddress
   amountIn: string;
   depositAddress: string;
   destinationAsset: string;
