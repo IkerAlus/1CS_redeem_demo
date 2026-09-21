@@ -28,7 +28,7 @@ export const gatewayConfig = () => ({
   networks: opt("NETWORKS", "eip155:8453,eip155:137,eip155:42161").split(","),
   merchantWallet: need("MERCHANT_WALLET") as `0x${string}`,
   merchantPrivateKey: need("MERCHANT_PRIVATE_KEY") as `0x${string}`, // custodied by the gateway stand-in
-  redeemRecipient: process.env.REDEEM_RECIPIENT || undefined, // seeds the default `near-usdc` destination
+  redeemRecipient: process.env.REDEEM_RECIPIENT || undefined, // seeds a USDC-on-NEAR destination on first start
   destinationsFile: opt("DESTINATIONS_FILE", "./destinations.json"),
   moduleUrl: opt("MODULE_URL", "http://localhost:4022"),
   balancesFile: opt("BALANCES_FILE", "./balances.json"),

@@ -9,7 +9,7 @@ flowchart LR
     B["Buyer agent<br/>standard x402 client"] -- "1. pays USDC per request" --> G["Gateway (stock x402)<br/>+ balance tally + merchant API"]
     G -- "2. USDC lands, balance tallied" --> W["Merchant wallet<br/>(gateway-custodied)"]
     M["Merchant<br/>(curl = the dashboard)"] -- "3. add destination · balances · redeem" --> G
-    G -- "4. quote · report tx · status" --> R["Redeem module<br/>1Click quote · ledger · tracker"]
+    G -- "4. quote · status" --> R["Redeem module<br/>1Click quote · ledger · tracker"]
     R -- "5. quote + tracking" --> N["NEAR Intents 1Click"]
     W -- "6. gateway signs one transfer<br/>to the 1Click deposit address" --> N
     N -- "7. swap + payout" --> D["Merchant's chosen<br/>chain and token"]
@@ -33,10 +33,10 @@ Two processes (`gateway` on :4021, `module` on :4022, or both at once with `npm 
 
 | Component | File | What it does |
 |---|---|---|
-| Redeem module | `src/module.ts`, `src/redeem.ts` | The HTTP service the gateway's dashboard backend calls: preview and confirm a redeem (1Click quotes), take the merchant's tx hash, track the swap to delivery. |
+| Redeem module | `src/module.ts`, `src/redeem.ts` | The HTTP service the gateway's dashboard backend calls: preview and confirm a redeem (1Click quotes), then poll 1Click in the background until the swap is delivered or refunded. |
 | Ledger | `src/ledger.ts` | One record per redeem, from instructions to delivery or refund; a JSON file here, a database table in production. |
 | Network table | `src/networks.ts` | The payment networks a merchant can redeem from, their USDC contracts and 1Click asset ids. |
-| Destinations | `src/destinations.ts` → `destinations.json` | The chains and tokens a merchant can be paid out to (near, tron, ethereum, bitcoin, zcash, solana; native token plus USDC/USDT where 1Click lists them) and the merchant's saved `{alias, chain, token, account}` list. |
+| Destinations | `src/destinations.ts` → `destinations.json` | The chains and tokens a merchant can be paid out to (near, tron, ethereum, bitcoin, zcash, solana; native token plus USDC/USDT where 1Click lists them) and the merchant's saved `{chain, token, account}` list. |
 | Dashboard and API changes | sketched by `/merchant/*` | The operator's side: a Redeem screen and public-API endpoints over the module calls, the custody signer, and balance decrement/restore on confirm, expiry and refund. |
 
 ## Before you start
@@ -72,17 +72,17 @@ The merchant then uses the gateway's API, nothing to install:
 
 ```bash
 curl -s localhost:4021/merchant/balances
-curl -s localhost:4021/merchant/destinations          # saved payout destinations (REDEEM_RECIPIENT seeds "near-usdc")
+curl -s localhost:4021/merchant/destinations          # saved payout destinations (REDEEM_RECIPIENT seeds USDC on NEAR)
 curl -s -X POST localhost:4021/merchant/destinations -H 'content-type: application/json' -d '{"chain":"solana","token":"USDC","account":"<your Solana address>"}'
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","to":"solana-usdc","dry":true}'
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","to":"solana-usdc"}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","chain":"solana","token":"USDC","dry":true}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","chain":"solana","token":"USDC"}'
 curl -s localhost:4021/merchant/redeems/<redeemId>     # poll until phase SUCCESS (about a minute)
 curl -s localhost:4021/merchant/redeems                # history
 ```
 
-`POST /merchant/destinations` fields: `chain` (`near`, `tron`, `ethereum`, `bitcoin`, `zcash`, `solana`), `token` (the chain's native token, `USDC` or `USDT` where 1Click lists them), `account`. Returns the saved entry with its alias (`chain-token`), 1Click `assetId` and `decimals`.
+`POST /merchant/destinations` fields: `chain` (`near`, `tron`, `ethereum`, `bitcoin`, `zcash`, `solana`), `token` (the chain's native token, `USDC` or `USDT` where 1Click lists them), `account`. One account per chain and token; adding the pair again replaces it. Returns the saved entry with its 1Click `assetId` and `decimals`.
 
-`POST /merchant/redeem` fields: `originNetwork` (required, CAIP-2, the payment network the balance sits on), `to` (required, the alias of a saved destination), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds.
+`POST /merchant/redeem` fields: `originNetwork` (required, CAIP-2, the payment network the balance sits on), `chain` and `token` (required, a saved destination), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds; the module then polls 1Click every few seconds until the redeem is delivered or refunded.
 
 Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 0.28 USDC to USDC on Solana; about 2 USDC to USDT on Tron. Minimums move; a `dry` redeem returns the current one in the 1Click message when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.
 

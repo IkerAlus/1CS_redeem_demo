@@ -1,8 +1,7 @@
 /**
  * Redeem module: the HTTP surface a gateway's dashboard backend would call.
  *   GET  /v1/redeem/preview      dry quote
- *   POST /v1/redeems             wet quote → payment instructions (REQUESTED)
- *   POST /v1/redeems/:id/tx      merchant reports the transfer (FUNDED)
+ *   POST /v1/redeems             wet quote → deposit instructions (REQUESTED); the tracker takes it from there
  *   GET  /v1/redeems/:id         one redeem
  *   GET  /v1/redeems?merchantId  all redeems of a merchant
  */
@@ -44,11 +43,6 @@ function createApp(svc: RedeemService, ledger: Ledger) {
   app.post("/v1/redeems", async (req, res) => {
     res.status(201).json(await svc.create(parseInput(req.body ?? {})));
   });
-  app.post("/v1/redeems/:id/tx", async (req, res) => {
-    const txHash = req.body?.txHash;
-    if (typeof txHash !== "string" || !txHash) throw new HttpError(400, "missing txHash");
-    res.json(await svc.reportTx(req.params.id, txHash));
-  });
   app.get("/v1/redeems/:id", (req, res) => {
     const row = ledger.get(req.params.id);
     if (!row) throw new HttpError(404, `unknown redeem ${req.params.id}`);
@@ -71,19 +65,16 @@ function createApp(svc: RedeemService, ledger: Ledger) {
   return app;
 }
 
-// Entry point: `npm run module`
-if (process.argv[1]?.endsWith("module.ts")) {
-  const cfg = moduleConfig();
-  const ledger = new Ledger(cfg.ledgerFile);
-  const svc = new RedeemService(sdkClient(cfg.oneClickJwt), ledger, {
-    windowMin: cfg.redeemWindowMin,
-    referral: cfg.referral,
-  });
-  setInterval(() => void svc.tick(), cfg.pollMs);
-  void svc.tick(); // pick up anything open from a previous run
-  createApp(svc, ledger).listen(cfg.port, () => {
-    console.log(
-      `redeem module on :${cfg.port} | ledger ${cfg.ledgerFile} (${ledger.open().length} open) | window ${cfg.redeemWindowMin} min | jwt ${cfg.oneClickJwt ? "yes" : "no (+0.2% fee)"}`,
-    );
-  });
-}
+const cfg = moduleConfig();
+const ledger = new Ledger(cfg.ledgerFile);
+const svc = new RedeemService(sdkClient(cfg.oneClickJwt), ledger, {
+  windowMin: cfg.redeemWindowMin,
+  referral: cfg.referral,
+});
+setInterval(() => void svc.tick(), cfg.pollMs);
+void svc.tick(); // pick up anything left open by a previous run
+createApp(svc, ledger).listen(cfg.port, () => {
+  console.log(
+    `redeem module on :${cfg.port} | ledger ${cfg.ledgerFile} (${ledger.pending().length} pending) | poll ${cfg.pollMs} ms | window ${cfg.redeemWindowMin} min | jwt ${cfg.oneClickJwt ? "yes" : "no (+0.2% fee)"}`,
+  );
+});

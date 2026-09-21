@@ -2,8 +2,9 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
-type Phase = "REQUESTED" | "FUNDED" | "SUCCESS" | "REFUNDED" | "FAILED" | "EXPIRED";
-const OPEN_PHASES: ReadonlySet<Phase> = new Set(["REQUESTED", "FUNDED"]);
+export type Phase = "REQUESTED" | "EXPIRED" | "SUCCESS" | "REFUNDED" | "FAILED";
+/** Phases 1CS itself reports; nothing changes after one of these. */
+export const TERMINAL: ReadonlySet<string> = new Set<Phase>(["SUCCESS", "REFUNDED", "FAILED"]);
 
 export type Redeem = {
   redeemId: string;
@@ -17,8 +18,8 @@ export type Redeem = {
   recipient: string;
   quote: { amountOut: string; minAmountOut: string; deadline: string; correlationId: string };
   phase: Phase;
-  txHash?: string;
   oneClickStatus?: string;
+  originTxs?: { hash: string; explorerUrl: string }[];
   destinationTxs?: { hash: string; explorerUrl: string }[];
   createdAt: number;
   updatedAt: number;
@@ -43,8 +44,15 @@ export class Ledger {
       .sort((a, b) => b.createdAt - a.createdAt);
   }
 
-  open(): Redeem[] {
-    return this.list().filter((r) => OPEN_PHASES.has(r.phase));
+  /** Rows still awaiting a deposit. */
+  pending(): Redeem[] {
+    return this.list().filter((r) => r.phase === "REQUESTED");
+  }
+
+  /** Rows without a 1CS outcome yet, including recently expired ones (a late deposit is refunded, worth watching). */
+  tracked(graceMs: number): Redeem[] {
+    const now = Date.now();
+    return this.list().filter((r) => !TERMINAL.has(r.phase) && now < Date.parse(r.quote.deadline) + graceMs);
   }
 
   put(row: Redeem): Redeem {

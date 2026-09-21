@@ -3,7 +3,8 @@
  *
  *  - CHAINS: the catalog — for each supported chain, its native token and the two stablecoins where 1Click
  *    lists them (asset ids from GET /v0/tokens, 2026-09-11), an address format check, a block explorer.
- *  - Destinations: the merchant's saved list `{alias, chain, token, account, assetId, decimals}`, one JSON file.
+ *  - Destinations: the merchant's saved list `{chain, token, account, assetId, decimals}`, one per chain+token,
+ *    in one JSON file.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -69,8 +70,7 @@ export const CHAINS: Record<string, Chain> = {
   },
 };
 
-export type Destination = {
-  alias: string;
+type Destination = {
   chain: string;
   token: string;
   account: string;
@@ -117,18 +117,16 @@ export class Destinations {
     return this.rows;
   }
 
-  get(alias: string): Destination | undefined {
-    return this.rows.find((d) => d.alias === alias);
+  get(chain: unknown, token: unknown): Destination | undefined {
+    const c = String(chain ?? "").toLowerCase();
+    const t = String(token ?? "").toUpperCase();
+    return this.rows.find((d) => d.chain === c && d.token === t);
   }
 
-  /** Validate and save. The alias is `chain-token`, suffixed `-2`, `-3`… when taken. */
+  /** Validate and save; re-adding a chain+token pair replaces its account. */
   add(input: { chain?: unknown; token?: unknown; account?: unknown }): Destination {
-    const v = validateDestination(input);
-    const base = `${v.chain}-${v.token.toLowerCase()}`;
-    let alias = base;
-    for (let i = 2; this.get(alias); i++) alias = `${base}-${i}`;
-    const row: Destination = { alias, ...v };
-    this.rows.push(row);
+    const row = validateDestination(input);
+    this.rows = this.rows.filter((d) => !(d.chain === row.chain && d.token === row.token)).concat(row);
     writeFileSync(this.file, JSON.stringify(this.rows, null, 2));
     return row;
   }

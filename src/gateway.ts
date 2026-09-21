@@ -6,7 +6,7 @@
  *   - a balance tally per network (the gateway's settlement bookkeeping), and
  *   - a merchant REST API (`/merchant/*`) that plays the dashboard: balances, saved payout destinations
  *     (add / list), preview / redeem, history. The merchant wallet is **custodied by the gateway**: on a
- *     redeem the gateway quotes through the redeem module, signs the USDC transfer itself, reports the tx, tracks.
+ *     redeem the gateway quotes through the redeem module and signs the USDC transfer itself.
  */
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -34,7 +34,6 @@ const merchant = privateKeyToAccount(cfg.merchantPrivateKey);
 if (merchant.address.toLowerCase() !== cfg.merchantWallet.toLowerCase()) {
   throw new Error(`MERCHANT_PRIVATE_KEY controls ${merchant.address}, not MERCHANT_WALLET ${cfg.merchantWallet}`);
 }
-const chains = { 8453: base, 137: polygon, 42161: arbitrum } as const;
 const fmt = (units: string | bigint, decimals: number) => formatUnits(BigInt(units), decimals);
 const usdc = (units: string | bigint) => `${fmt(units, 6)} USDC`;
 
@@ -47,7 +46,7 @@ const saveBalances = () => writeFileSync(cfg.balancesFile, JSON.stringify(balanc
 // ── the merchant's saved payout destinations ───────────────────────────────────────────────────────
 const dests = new Destinations(cfg.destinationsFile);
 if (dests.list().length === 0 && cfg.redeemRecipient) {
-  dests.add({ chain: "near", token: "USDC", account: cfg.redeemRecipient }); // alias near-usdc
+  dests.add({ chain: "near", token: "USDC", account: cfg.redeemRecipient });
 }
 
 // ── stock x402 wiring ──────────────────────────────────────────────────────────────────────────────
@@ -111,7 +110,7 @@ async function module<T>(path: string, init?: RequestInit): Promise<T> {
 /** Sign and send `amount` USDC from the custodied merchant wallet on `network`; resolves when mined. */
 async function sendUsdc(network: string, to: `0x${string}`, amount: string) {
   const n = NETWORKS[network]!;
-  const chain = chains[n.chainId as keyof typeof chains];
+  const chain = [base, polygon, arbitrum].find((c) => c.id === n.chainId)!;
   const pub = createPublicClient({ chain, transport: http(n.rpc) });
   const wallet = createWalletClient({ account: merchant, chain, transport: http(n.rpc) });
   const [onChain, gas] = await Promise.all([
@@ -140,16 +139,14 @@ async function sendUsdc(network: string, to: `0x${string}`, amount: string) {
 /** Add human-readable fields and links to a module row. */
 function view(r: Redeem) {
   const d = describeAsset(r.destinationAsset);
-  const saved = dests.list().find((x) => x.assetId === r.destinationAsset && x.account === r.recipient);
   return {
     ...r,
     network: `${NETWORKS[r.network]?.name ?? r.network} (${r.network})`,
     amountIn: usdc(r.amountIn),
-    destination: saved?.alias,
     receives: d
       ? `≈ ${fmt(r.quote.amountOut, d.decimals)} ${d.token} on ${d.chain} → ${r.recipient}`
       : `${r.quote.amountOut} units → ${r.recipient}`,
-    transferExplorer: r.txHash ? `${NETWORKS[r.network]?.explorerTx}${r.txHash}` : undefined,
+    transferLinks: r.originTxs?.map((t) => t.explorerUrl || `${NETWORKS[r.network]?.explorerTx}${t.hash}`),
     destinationLinks: r.destinationTxs?.map((t) => t.explorerUrl || (d ? `${d.explorerTx}${t.hash}` : t.hash)),
   };
 }
@@ -173,14 +170,14 @@ m.get("/destinations", (_req, res) => res.json(dests.list()));
 /** POST /merchant/destinations { chain, token, account } — validate against the catalog and save. */
 m.post("/destinations", (req, res) => {
   const d = dests.add((req.body ?? {}) as Record<string, unknown>);
-  console.log(`[merchant] destination ${d.alias}: ${d.token} on ${d.chain} → ${d.account}`);
+  console.log(`[merchant] destination ${d.token} on ${d.chain} → ${d.account}`);
   res.status(201).json(d);
 });
 
 /**
- * POST /merchant/redeem  { originNetwork, to, amount?, dry?, delaySec? }   (`to` = alias of a saved destination)
+ * POST /merchant/redeem  { originNetwork, chain, token, amount?, dry?, delaySec? }   (chain+token = a saved destination)
  *   dry: true  → preview only.
- *   otherwise  → quote, sign + send the transfer from the custodied wallet, report, decrement the tally.
+ *   otherwise  → quote, sign + send the transfer from the custodied wallet, decrement the tally.
  *   delaySec   → demo-only: wait before sending (late-send / refund path).
  */
 m.post("/redeem", async (req, res) => {
@@ -189,15 +186,14 @@ m.post("/redeem", async (req, res) => {
   const n = NETWORKS[network];
   if (!n || !networks.includes(network as Network))
     throw new ApiError(400, `originNetwork must be one of ${networks.join(", ")}`);
-  const to = String(b.to ?? "");
-  const dest = dests.get(to);
+  const dest = dests.get(b.chain, b.token);
   if (!dest) {
-    const aliases = dests.list().map((d) => d.alias);
+    const saved = dests.list().map((d) => `${d.chain}/${d.token}`);
     throw new ApiError(
       400,
-      aliases.length
-        ? `to must be a saved destination: ${aliases.join(", ")}`
-        : "to must be a saved destination; add one with POST /merchant/destinations",
+      saved.length
+        ? `chain/token must be a saved destination: ${saved.join(", ")}`
+        : "chain/token must be a saved destination; add one with POST /merchant/destinations",
     );
   }
   const { assetId: destinationAsset, account: recipient } = dest;
@@ -226,15 +222,14 @@ m.post("/redeem", async (req, res) => {
     return res.json({
       dry: true,
       redeem: `${usdc(amount)} on ${n.name}`,
-      to: dest.alias,
       receive: `≈ ${fmt(p.amountOut, dest.decimals)} ${dest.token} on ${dest.chain} → ${recipient}`,
       minimumReceive: fmt(p.minAmountOut, dest.decimals),
       estimatedSeconds: p.timeEstimateSec,
     });
   }
 
-  // Reuse an open REQUESTED redeem for this network (e.g. a previous attempt whose transfer failed):
-  // its 1Click deposit address is still valid, so we retry the transfer instead of minting a new quote.
+  // Reuse a pending redeem for this network (e.g. a previous attempt whose transfer failed): its 1Click
+  // deposit address is still valid, so we retry the transfer instead of minting a new quote.
   const open = (await module<Redeem[]>(`/v1/redeems?merchantId=${MERCHANT_ID}`)).find(
     (x) => x.network === network && x.phase === "REQUESTED",
   );
@@ -244,27 +239,25 @@ m.post("/redeem", async (req, res) => {
   ) {
     throw new ApiError(
       409,
-      `an open redeem (${open.redeemId}) for ${usdc(open.amountIn)} → ${open.recipient} is pending on ${n.name}; retry with the same parameters or wait until ${open.quote.deadline}`,
+      `a redeem (${open.redeemId}) for ${usdc(open.amountIn)} → ${open.recipient} is pending on ${n.name}; retry with the same parameters or wait until ${open.quote.deadline}`,
     );
   }
   const r =
     open ?? (await module<Redeem>("/v1/redeems", { method: "POST", body: JSON.stringify(Object.fromEntries(q)) }));
   console.log(
-    `[merchant] redeem ${r.redeemId.slice(0, 8)}${open ? " (retry)" : ""}: ${usdc(amount)} on ${n.name} → ${dest.alias} (${dest.token} on ${dest.chain}, ${recipient}) | deposit ${r.depositAddress}`,
+    `[merchant] redeem ${r.redeemId.slice(0, 8)}${open ? " (retry)" : ""}: ${usdc(amount)} on ${n.name} → ${dest.token} on ${dest.chain} (${recipient}) | deposit ${r.depositAddress}`,
   );
   if (Number(b.delaySec) > 0) {
     console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: waiting ${String(b.delaySec)}s before sending (demo)`);
     await sleep(Number(b.delaySec) * 1000);
   }
   const tx = await sendUsdc(network, r.depositAddress as `0x${string}`, r.amountIn);
-  const funded = await module<Redeem>(`/v1/redeems/${r.redeemId}/tx`, {
-    method: "POST",
-    body: JSON.stringify({ txHash: tx.hash }),
-  });
   balances[network] = (BigInt(balances[network] ?? "0") - BigInt(amount)).toString(); // payments may have landed meanwhile
   saveBalances();
   console.log(`[merchant] redeem ${r.redeemId.slice(0, 8)}: sent ${tx.explorer} | balance left ${balances[network]}`);
-  return res.status(201).json({ ...view(funded), track: `GET /merchant/redeems/${r.redeemId}` });
+  return res
+    .status(201)
+    .json({ ...view(r), transferLinks: [tx.explorer], track: `GET /merchant/redeems/${r.redeemId}` });
 });
 
 m.get("/redeems", async (_req, res) =>

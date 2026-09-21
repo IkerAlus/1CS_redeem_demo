@@ -42,25 +42,24 @@ const quoteResponse = (dry: boolean): QuoteResponse =>
     },
   }) as unknown as QuoteResponse;
 
-const statusResponse = (status: string, hashes: string[] = []): GetExecutionStatusResponse =>
+const statusResponse = (status: string, dest: string[] = [], origin: string[] = []): GetExecutionStatusResponse =>
   ({
     correlationId: "corr-1",
     status,
     updatedAt: new Date().toISOString(),
-    swapDetails: { destinationChainTxHashes: hashes.map((hash) => ({ hash, explorerUrl: "" })) },
+    swapDetails: {
+      originChainTxHashes: origin.map((hash) => ({ hash, explorerUrl: "" })),
+      destinationChainTxHashes: dest.map((hash) => ({ hash, explorerUrl: "" })),
+    },
   }) as unknown as GetExecutionStatusResponse;
 
 /** Programmable fake 1CS. */
 function fake(overrides: Partial<OneClick> = {}) {
-  const calls = { quote: [] as unknown[], submit: [] as unknown[] };
+  const calls = { quote: [] as unknown[] };
   const oc: OneClick = {
     quote: async (req) => {
       calls.quote.push(req);
       return quoteResponse(req.dry === true);
-    },
-    submitDeposit: async (d, t) => {
-      calls.submit.push([d, t]);
-      return {};
     },
     status: async () => statusResponse("PENDING_DEPOSIT"),
     ...overrides,
@@ -95,7 +94,7 @@ test("preview returns the dry quote and never stores anything", async () => {
   assert.equal(ledger.list().length, 0);
 });
 
-test("create stores a REQUESTED row with instructions; a second open redeem on the same network is refused", async () => {
+test("create stores a REQUESTED row with instructions; a second pending redeem on the same network is refused", async () => {
   const { oc } = fake();
   const ledger = freshLedger();
   const svc = service(oc, ledger);
@@ -111,61 +110,49 @@ test("create stores a REQUESTED row with instructions; a second open redeem on t
   );
   await assert.rejects(svc.create(input), (e: HttpError) => e.status === 409);
   await svc.create({ ...input, network: "eip155:8453" }); // another network is fine
-  assert.equal(ledger.open().length, 2);
-});
-
-test("reportTx moves to FUNDED and notifies 1CS; a failing deposit/submit is ignored", async () => {
-  const ok = fake();
-  const okSvc = service(ok.oc);
-  const okRow = await okSvc.create(input);
-  await okSvc.reportTx(okRow.redeemId, "0xabc");
-  assert.deepEqual(ok.calls.submit, [[okRow.depositAddress, "0xabc"]]);
-
-  const { oc } = fake({
-    submitDeposit: async () => {
-      throw new Error("1CS down");
-    },
-  });
-  const svc = service(oc);
-  const row = await svc.create(input);
-  const funded = await svc.reportTx(row.redeemId, "0xabc");
-  assert.equal(funded.phase, "FUNDED");
-  assert.equal(funded.txHash, "0xabc");
-  await assert.rejects(svc.reportTx(row.redeemId, "0xabc"), (e: HttpError) => e.status === 409);
-  await assert.rejects(svc.reportTx("nope", "0xabc"), (e: HttpError) => e.status === 404);
+  assert.equal(ledger.pending().length, 2);
 });
 
 for (const terminal of ["SUCCESS", "REFUNDED", "FAILED"] as const) {
-  test(`tick: FUNDED → ${terminal} with destination tx hashes`, async () => {
-    const { oc } = fake({ status: async () => statusResponse(terminal, ["0xdest"]) });
+  test(`tick: REQUESTED → ${terminal} with origin and destination tx hashes, no report needed`, async () => {
+    const { oc } = fake({ status: async () => statusResponse(terminal, ["0xdest"], ["0xorigin"]) });
     const ledger = freshLedger();
     const svc = service(oc, ledger);
     const row = await svc.create(input);
-    await svc.reportTx(row.redeemId, "0xabc");
     await svc.tick();
     const done = ledger.get(row.redeemId)!;
     assert.equal(done.phase, terminal);
     assert.equal(done.oneClickStatus, terminal);
+    assert.deepEqual(done.originTxs, [{ hash: "0xorigin", explorerUrl: "" }]);
     assert.deepEqual(done.destinationTxs, [{ hash: "0xdest", explorerUrl: "" }]);
-    assert.equal(ledger.open().length, 0);
+    assert.equal(ledger.pending().length, 0);
+    assert.equal(ledger.tracked(60_000).length, 0);
   });
 }
 
-test("tick: REQUESTED past the cutoff with nothing deposited → EXPIRED; PROCESSING is left alone", async () => {
-  const { oc } = fake();
+test("tick: PROCESSING keeps the row REQUESTED and records the origin tx", async () => {
+  const { oc } = fake({ status: async () => statusResponse("PROCESSING", [], ["0xorigin"]) });
+  const ledger = freshLedger();
+  const svc = service(oc, ledger);
+  const row = await svc.create(input);
+  await svc.tick();
+  assert.equal(ledger.get(row.redeemId)!.phase, "REQUESTED");
+  assert.equal(ledger.get(row.redeemId)!.originTxs?.[0]?.hash, "0xorigin");
+});
+
+test("tick: past the cutoff with nothing deposited → EXPIRED, still tracked; a late refund is picked up", async () => {
+  const seen = { status: "PENDING_DEPOSIT" };
+  const { oc } = fake({ status: async () => statusResponse(seen.status) });
   const ledger = freshLedger();
   const svc = service(oc, ledger, 0); // zero-minute window: already expired
   const row = await svc.create(input);
   await svc.tick();
   assert.equal(ledger.get(row.redeemId)!.phase, "EXPIRED");
-
-  const busy = fake({ status: async () => statusResponse("PROCESSING") });
-  const ledger2 = freshLedger();
-  const svc2 = service(busy.oc, ledger2, 0);
-  const row2 = await svc2.create(input);
-  await svc2.tick();
-  assert.equal(ledger2.get(row2.redeemId)!.phase, "REQUESTED"); // funds arrived late without a report: keep tracking
-  assert.equal(ledger2.get(row2.redeemId)!.oneClickStatus, "PROCESSING");
+  assert.equal(ledger.pending().length, 0, "an expired redeem no longer blocks new ones");
+  assert.equal(ledger.tracked(60_000).length, 1, "but stays tracked during the grace period");
+  seen.status = "REFUNDED";
+  await svc.tick();
+  assert.equal(ledger.get(row.redeemId)!.phase, "REFUNDED");
 });
 
 test("tick: a failing status poll leaves the row untouched and does not throw", async () => {
@@ -177,9 +164,9 @@ test("tick: a failing status poll leaves the row untouched and does not throw", 
   const ledger = freshLedger();
   const svc = service(oc, ledger);
   const row = await svc.create(input);
-  await svc.reportTx(row.redeemId, "0xabc");
   await svc.tick();
-  assert.equal(ledger.get(row.redeemId)!.phase, "FUNDED");
+  assert.equal(ledger.get(row.redeemId)!.phase, "REQUESTED");
+  assert.equal(ledger.get(row.redeemId)!.oneClickStatus, undefined);
 });
 
 test("tick: 1CS 404 for an unfunded address counts as PENDING_DEPOSIT, then EXPIRED at the cutoff", async () => {
@@ -211,5 +198,5 @@ test("ledger reloads from disk", async () => {
   const row = await svc.create(input);
   const reloaded = new Ledger(file);
   assert.equal(reloaded.get(row.redeemId)?.depositAddress, row.depositAddress);
-  assert.equal(reloaded.open().length, 1);
+  assert.equal(reloaded.pending().length, 1);
 });

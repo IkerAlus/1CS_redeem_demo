@@ -40,20 +40,21 @@ test("validateDestination: rejects unknown chain, unsupported token, malformed a
   assert.throws(() => validateDestination({ chain: "ethereum", token: "ETH", account: "0x123" }), /EVM/);
 });
 
-test("Destinations: alias is chain-token, suffixed when taken; persists across reloads", () => {
+test("Destinations: one account per chain+token, re-adding replaces it; persists across reloads", () => {
   const file = join(mkdtempSync(join(tmpdir(), "dest-")), "destinations.json");
   const d = new Destinations(file);
-  const a = d.add({ chain: "solana", token: "usdc", account: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" });
-  assert.equal(a.alias, "solana-usdc");
-  const b = d.add({ chain: "solana", token: "USDC", account: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" });
-  assert.equal(b.alias, "solana-usdc-2");
+  d.add({ chain: "solana", token: "usdc", account: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v" });
+  d.add({ chain: "near", token: "USDC", account: "ikerpriv.near" });
+  d.add({ chain: "Solana", token: "USDC", account: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" }); // replaces
   assert.throws(
     () => d.add({ chain: "tron", token: "USDC", account: "TN3W4H6rK2ce4vX9YnFQHwKENnHjoxb3m9" }),
     ValidationError,
   );
   const reloaded = new Destinations(file);
   assert.equal(reloaded.list().length, 2);
-  assert.equal(reloaded.get("solana-usdc-2")?.account, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
+  assert.equal(reloaded.get("solana", "usdc")?.account, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB");
+  assert.equal(reloaded.get("near", "USDC")?.account, "ikerpriv.near");
+  assert.equal(reloaded.get("near", "USDT"), undefined);
 });
 
 test("describeAsset: reverse lookup gives chain, token, decimals, explorer", () => {
