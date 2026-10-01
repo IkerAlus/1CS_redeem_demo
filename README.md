@@ -47,11 +47,11 @@ Everything below is needed only once. Fill the values into `.env` (copy `.env.ex
 |---|---|---|
 | Coinbase Developer Platform **Secret** API key | portal.cdp.coinbase.com → API keys → Secret | Facilitator verify/settle on mainnet. Free tier: 1,000 settlements/month. |
 | 1Click partner JWT (optional) | partners.near-intents.org | Removes the 0.2 % fee on quotes. Everything works without it. |
-| Buyer wallet | fresh EOA | ~3 USDC on each network below. No gas needed. |
-| Merchant wallet | fresh EOA, key held by the gateway | A few cents of gas per network (ETH on Base and Arbitrum, POL on Polygon). No USDC; it receives the payments and the gateway signs redeems from it. |
+| Buyer wallet | fresh EOA | ~3 USDC on Base (plus Arbitrum or Polygon if you want to show those). No gas needed. |
+| Merchant wallet | fresh EOA, key held by the gateway | A few cents of gas on each network you use (ETH on Base and Arbitrum, POL on Polygon). No USDC; it receives the payments and the gateway signs redeems from it. |
 | Payout destination | any account on a supported chain | Added through the merchant API; `REDEEM_RECIPIENT` (a NEAR account) optionally seeds a first one. |
 
-Native USDC contracts for funding the buyer (not the bridged `USDC.e` variants):
+Base is the primary network in the examples below; Arbitrum and Polygon are configured as alternatives. Native USDC contracts for funding the buyer (not the bridged `USDC.e` variants):
 
 | Network | USDC |
 |---|---|
@@ -65,7 +65,7 @@ Then:
 npm install
 cp .env.example .env
 npm run demo         # terminal 1: gateway (:4021) + module (:4022) together; or `npm run gateway` and `npm run module` in two terminals
-npm run buy -- --network eip155:42161 --times 3    # terminal 2: a buyer pays three times
+npm run buy -- --network eip155:8453 --times 3     # terminal 2: a buyer pays three times on Base
 ```
 
 The merchant then uses the gateway's API, nothing to install:
@@ -74,9 +74,9 @@ The merchant then uses the gateway's API, nothing to install:
 curl -s localhost:4021/merchant/balances
 curl -s localhost:4021/merchant/destinations          # saved payout destinations (REDEEM_RECIPIENT seeds USDC on NEAR)
 curl -s -X POST localhost:4021/merchant/destinations -H 'content-type: application/json' -d '{"chain":"solana","token":"USDC","account":"<your Solana address>"}'
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","chain":"solana","token":"USDC","dry":true}'
-curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:42161","chain":"solana","token":"USDC"}'
-curl -s localhost:4021/merchant/redeems/<redeemId>     # poll until phase SUCCESS (about a minute)
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:8453","chain":"solana","token":"USDC","dry":true}'
+curl -s -X POST localhost:4021/merchant/redeem -H 'content-type: application/json' -d '{"originNetwork":"eip155:8453","chain":"solana","token":"USDC"}'
+curl -s localhost:4021/merchant/redeems/<redeemId>     # check until phase is SUCCESS (about 30 seconds)
 curl -s localhost:4021/merchant/redeems                # history
 ```
 
@@ -84,6 +84,6 @@ curl -s localhost:4021/merchant/redeems                # history
 
 `POST /merchant/redeem` fields: `originNetwork` (required, CAIP-2, the payment network the balance sits on), `chain` and `token` (required, a saved destination), `amount` (USDC smallest units, default the whole balance), `dry` (preview only), `delaySec` (demo only: send late to show the refund path). The wet call returns after the transfer is mined, 5 to 15 seconds; the module then polls 1Click every few seconds until the redeem is delivered or refunded.
 
-Route minimums per redeem: 0.15 USDC from Base and 0.10 from Arbitrum to USDC on NEAR; about 0.28 USDC to USDC on Solana; about 2 USDC to USDT on Tron. Minimums move; a `dry` redeem returns the current one in the 1Click message when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.
+Route minimums per redeem from Base: 0.15 USDC to USDC on NEAR, about 0.28 USDC to USDC on Solana, about 2 USDC to USDT on Tron (from Arbitrum, 0.10 to NEAR). Minimums move; a `dry` redeem returns the current one in the 1Click message when the amount is too low. Polygon is configured but currently rejected by 1Click with a temporary $1,000 minimum.
 
 Solana note: if the recipient does not yet hold the token, 1Click adds about 0.27 USDC to the quote for creating the recipient's token account (1 USDC in → about 0.72 out).
